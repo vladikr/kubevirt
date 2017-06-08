@@ -111,14 +111,14 @@ func (f *kubeInformerFactory) getInformer(key string, newFunc newSharedInformer)
 
 func (f *kubeInformerFactory) VM() cache.SharedIndexInformer {
 	return f.getInformer("vmInformer", func() cache.SharedIndexInformer {
-		lw := cache.NewListWatchFromClient(f.restClient, "vms", kubeapi.NamespaceDefault, fields.Everything())
+		lw := cache.NewListWatchFromClient(f.restClient, "vms", kubeapi.NamespaceAll, fields.Everything())
 		return cache.NewSharedIndexInformer(lw, &kubev1.VM{}, f.defaultResync, cache.Indexers{})
 	})
 }
 
 func (f *kubeInformerFactory) Migration() cache.SharedIndexInformer {
 	return f.getInformer("migrationInformer", func() cache.SharedIndexInformer {
-		lw := cache.NewListWatchFromClient(f.restClient, "migrations", kubeapi.NamespaceDefault, fields.Everything())
+		lw := cache.NewListWatchFromClient(f.restClient, "migrations", kubeapi.NamespaceAll, fields.Everything())
 		return cache.NewSharedIndexInformer(lw, &kubev1.Migration{}, f.defaultResync, cache.Indexers{})
 	})
 }
@@ -131,7 +131,7 @@ func (f *kubeInformerFactory) KubeVirtPod() cache.SharedIndexInformer {
 			panic(err)
 		}
 
-		lw := kubecli.NewListWatchFromClient(f.clientSet.CoreV1().RESTClient(), "pods", kubeapi.NamespaceDefault, fields.Everything(), labelSelector)
+		lw := kubecli.NewListWatchFromClient(f.clientSet.CoreV1().RESTClient(), "pods", kubeapi.NamespaceAll, fields.Everything(), labelSelector)
 		return cache.NewSharedIndexInformer(lw, &k8sv1.Pod{}, f.defaultResync, cache.Indexers{})
 	})
 }

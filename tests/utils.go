@@ -208,10 +208,10 @@ func MustCleanup() {
 	PanicOnError(err)
 
 	// Remove all Migrations
-	PanicOnError(restClient.Delete().Namespace(api.NamespaceDefault).Resource("migrations").Do().Error())
+	PanicOnError(restClient.Delete().Namespace(api.NamespaceAll).Resource("migrations").Do().Error())
 
 	// Remove all VMs
-	PanicOnError(restClient.Delete().Namespace(api.NamespaceDefault).Resource("vms").Do().Error())
+	PanicOnError(restClient.Delete().Namespace(api.NamespaceAll).Resource("vms").Do().Error())
 
 	// Remove all Jobs
 	PanicOnError(coreClient.CoreV1().RESTClient().Delete().AbsPath("/apis/batch/v1/namespaces/default/jobs").Do().Error())
@@ -219,14 +219,14 @@ func MustCleanup() {
 	// Remove all pods associated with a job
 	jobPodlabelSelector, err := labels.Parse("job-name")
 	PanicOnError(err)
-	err = coreClient.Core().Pods(api.NamespaceDefault).
+	err = coreClient.Core().Pods(api.NamespaceAll).
 		DeleteCollection(nil, metav1.ListOptions{FieldSelector: fields.Everything().String(), LabelSelector: jobPodlabelSelector.String()})
 
 	PanicOnError(err)
 	// Remove VM pods
 	vmPodlabelSelector, err := labels.Parse(v1.AppLabel + " in (virt-launcher)")
 	PanicOnError(err)
-	err = coreClient.Core().Pods(api.NamespaceDefault).
+	err = coreClient.Core().Pods(api.NamespaceAll).
 		DeleteCollection(nil, metav1.ListOptions{FieldSelector: fields.Everything().String(), LabelSelector: vmPodlabelSelector.String()})
 
 	PanicOnError(err)
@@ -239,7 +239,11 @@ func PanicOnError(err error) {
 }
 
 func NewRandomVM() *v1.VM {
-	return v1.NewMinimalVM("testvm" + rand.String(5))
+	return NewRandomVMWithNS(api.NamespaceDefault)
+}
+
+func NewRandomVMWithNS(namespace string) *v1.VM {
+	return v1.NewMinimalVMWithNS(namespace, "testvm"+rand.String(5))
 }
 
 func NewRandomVMWithDirectLun(lun int) *v1.VM {
@@ -288,7 +292,8 @@ func NewRandomVMWithPVC(claimName string) *v1.VM {
 }
 
 func NewRandomMigrationForVm(vm *v1.VM) *v1.Migration {
-	return v1.NewMinimalMigration(vm.ObjectMeta.Name+"migrate"+rand.String(5), vm.ObjectMeta.Name)
+	ns := vm.GetObjectMeta().GetNamespace()
+	return v1.NewMinimalMigrationWithNS(ns, vm.ObjectMeta.Name+"migrate"+rand.String(5), vm.ObjectMeta.Name)
 }
 
 func NewRandomVMWithSerialConsole() *v1.VM {

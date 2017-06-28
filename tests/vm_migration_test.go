@@ -168,6 +168,59 @@ var _ = Describe("VmMigration", func() {
 			}, TIMEOUT, POLLING_INTERVAL).Should(Equal(1))
 			close(done)
 		}, 60)
+		It("Should migrate the VM with a non-default namespace", func(done Done) {
+			// Test namespace
+			testNS := "testNS"
+
+			// Create the VM
+			sourceVM = tests.NewRandomVMWithNS(testNS)
+			obj, err := restClient.Post().Resource("vms").Namespace(testNS).Body(sourceVM).Do().Get()
+			Expect(err).ToNot(HaveOccurred())
+			tests.WaitForSuccessfulVMStart(obj)
+
+			obj, err = restClient.Get().Resource("vms").Namespace(obj.(*v1.VM).ObjectMeta.Namespace).Name(obj.(*v1.VM).ObjectMeta.Name).Do().Get()
+			Expect(err).ToNot(HaveOccurred())
+
+			sourceNode := obj.(*v1.VM).Status.NodeName
+
+			// Create the Migration
+			migration := tests.NewRandomMigrationForVm(sourceVM)
+			err = restClient.Post().Resource("migrations").Namespace(migration.GetObjectMeta().GetNamespace()).Body(migration).Do().Error()
+			Expect(err).ToNot(HaveOccurred())
+
+			selector, err := labels.Parse(fmt.Sprintf("%s in (%s)", v1.MigrationLabel, migration.GetObjectMeta().GetName()) +
+				fmt.Sprintf(",%s in (%s)", v1.AppLabel, "migration"))
+			Expect(err).ToNot(HaveOccurred())
+
+			// Wait for the job
+			Eventually(func() int {
+				jobs, err := coreClient.CoreV1().Pods(migration.GetObjectMeta().GetNamespace()).List(metav1.ListOptions{LabelSelector: selector.String()})
+				Expect(err).ToNot(HaveOccurred())
+				return len(jobs.Items)
+			}, TIMEOUT*2, POLLING_INTERVAL).Should(Equal(1))
+
+			// Wait for the successful completion of the job
+			Eventually(func() k8sv1.PodPhase {
+				jobs, err := coreClient.CoreV1().Pods(migration.GetObjectMeta().GetNamespace()).List(metav1.ListOptions{LabelSelector: selector.String()})
+				Expect(err).ToNot(HaveOccurred())
+				return jobs.Items[0].Status.Phase
+			}, TIMEOUT*2, POLLING_INTERVAL).Should(Equal(k8sv1.PodSucceeded))
+
+			// Give the pod controller some time to update the VM after successful migrations
+			Eventually(func() v1.VMPhase {
+				obj, err := restClient.Get().Resource("vms").Namespace(obj.(*v1.VM).ObjectMeta.Namespace).Name(obj.(*v1.VM).ObjectMeta.Name).Do().Get()
+				Expect(err).ToNot(HaveOccurred())
+				fetchedVM := obj.(*v1.VM)
+				return fetchedVM.Status.Phase
+			}, TIMEOUT, POLLING_INTERVAL).Should(Equal(v1.Running))
+
+			obj, err = restClient.Get().Resource("vms").Namespace(obj.(*v1.VM).ObjectMeta.Namespace).Name(obj.(*v1.VM).ObjectMeta.Name).Do().Get()
+			Expect(err).ToNot(HaveOccurred())
+			migratedVM := obj.(*v1.VM)
+			Expect(migratedVM.Status.Phase).To(Equal(v1.Running))
+			Expect(migratedVM.Status.NodeName).ToNot(Equal(sourceNode))
+			close(done)
+		}, 180)
 
 		AfterEach(func() {
 			tests.MustCleanup()

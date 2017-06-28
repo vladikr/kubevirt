@@ -223,6 +223,55 @@ var _ = Describe("Vmlifecycle", func() {
 				close(done)
 			}, 50)
 		})
+		Context("New VM in a non-deafult namespace", func() {
+			It("Should log libvirt start and stop lifecycle events of the domain", func(done Done) {
+				testNS := "testNS"
+				vm = tests.NewRandomVMWithNS(testNS)
+
+				// Get the pod name of virt-handler running on the master node to inspect its logs later on
+				handlerNodeSelector := fields.ParseSelectorOrDie("spec.nodeName=master")
+				labelSelector, err := labels.Parse("daemon in (virt-handler)")
+				Expect(err).NotTo(HaveOccurred())
+				pods, err := coreCli.CoreV1().Pods(api.NamespaceAll).List(metav1.ListOptions{FieldSelector: handlerNodeSelector.String(), LabelSelector: labelSelector.String()})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(pods.Items).To(HaveLen(1))
+
+				handlerName := pods.Items[0].GetObjectMeta().GetName()
+				seconds := int64(30)
+				logsQuery := coreCli.Pods(api.NamespaceAll).GetLogs(handlerName, &kubev1.PodLogOptions{SinceSeconds: &seconds})
+
+				// Make sure we schedule the VM to master
+				vm.Spec.NodeSelector = map[string]string{"kubernetes.io/hostname": "master"}
+
+				// Start the VM and wait for the confirmation of the start
+				obj, err := restClient.Post().Resource("vms").Namespace(vm.GetObjectMeta().GetNamespace()).Body(vm).Do().Get()
+				Expect(err).ToNot(HaveOccurred())
+				tests.WaitForSuccessfulVMStart(obj)
+
+				// Check if the start event was logged
+				Eventually(func() string {
+					data, err := logsQuery.DoRaw()
+					Expect(err).ToNot(HaveOccurred())
+					return string(data)
+				}, 5, 0.1).Should(MatchRegexp("(name=%s)[^\n]+(kind=Domain)[^\n]+(Domain is in state Running)", vm.GetObjectMeta().GetName()))
+				// Check the VM Namespace
+				Expect(vm.GetObjectMeta().GetNamespace()).To(Equal(testNS))
+
+				// Delete the VM and wait for the confirmation of the delete
+				_, err = restClient.Delete().Resource("vms").Namespace(vm.GetObjectMeta().GetNamespace()).Name(vm.GetObjectMeta().GetName()).Do().Get()
+				Expect(err).To(BeNil())
+				tests.NewObjectEventWatcher(obj).WaitFor(tests.NormalEvent, v1.Deleted)
+
+				// Check if the stop event was logged
+				Eventually(func() string {
+					data, err := logsQuery.DoRaw()
+					Expect(err).ToNot(HaveOccurred())
+					return string(data)
+				}, 5, 0.1).Should(MatchRegexp("(name=%s)[^\n]+(kind=Domain)[^\n]+(Domain deleted)", vm.GetObjectMeta().GetName()))
+
+				close(done)
+			}, 30)
+		})
 	})
 	AfterEach(func() {
 		tests.MustCleanup()

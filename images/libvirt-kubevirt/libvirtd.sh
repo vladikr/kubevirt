@@ -79,6 +79,7 @@ EOX
 fi
 
 echo "cgroup_controllers = [ ]" >> /etc/libvirt/qemu.conf
+#echo -e "log_level = 1" >> /etc/libvirt/libvirtd.conf
 
 if [[ -n "$LIBVIRTD_DISABLE_TCP" ]]; then
   /usr/sbin/libvirtd

@@ -81,6 +81,8 @@ func init() {
 	mapper.AddConversion(&Listen{}, &v1.Listen{})
 	mapper.AddPtrConversion((**DiskAuth)(nil), (**v1.DiskAuth)(nil))
 	mapper.AddPtrConversion((**DiskSecret)(nil), (**v1.DiskSecret)(nil))
+	mapper.AddConversion(&Metadata{}, &v1.Metadata{})
+	mapper.AddConversion(&InterfaceMetadata{}, &v1.InterfaceMetadata{})
 
 	model.AddConversion(&Video{}, &v1.Video{}, func(in reflect.Value) (reflect.Value, error) {
 		out := v1.Video{}
@@ -213,6 +215,7 @@ type DomainSpec struct {
 	Clock    *Clock       `xml:"clock,omitempty"`
 	Resource *Resource    `xml:"resource,omitempty"`
 	QEMUCmd  *Commandline `xml:"qemu:commandline,omitempty"`
+	Metadata Metadata     `xml:"metadata,omitempty"`
 }
 
 type Commandline struct {
@@ -329,17 +332,18 @@ type ConsoleTarget struct {
 // BEGIN Inteface -----------------------------
 
 type Interface struct {
-	Address   *Address         `xml:"address,omitempty"`
-	Type      string           `xml:"type,attr"`
-	Source    InterfaceSource  `xml:"source"`
-	Target    *InterfaceTarget `xml:"target,omitempty"`
-	Model     *Model           `xml:"model,omitempty"`
-	MAC       *MAC             `xml:"mac,omitempty"`
-	BandWidth *BandWidth       `xml:"bandwidth,omitempty"`
-	BootOrder *BootOrder       `xml:"boot,omitempty"`
-	LinkState *LinkState       `xml:"link,omitempty"`
-	FilterRef *FilterRef       `xml:"filterref,omitempty"`
-	Alias     *Alias           `xml:"alias,omitempty"`
+	Address             *Address         `xml:"address,omitempty"`
+	Type                string           `xml:"type,attr"`
+	TrustGuestRxFilters string           `xml:"trustGuestRxFilters,attr"`
+	Source              InterfaceSource  `xml:"source"`
+	Target              *InterfaceTarget `xml:"target,omitempty"`
+	Model               *Model           `xml:"model,omitempty"`
+	MAC                 *MAC             `xml:"mac,omitempty"`
+	BandWidth           *BandWidth       `xml:"bandwidth,omitempty"`
+	BootOrder           *BootOrder       `xml:"boot,omitempty"`
+	LinkState           *LinkState       `xml:"link,omitempty"`
+	FilterRef           *FilterRef       `xml:"filterref,omitempty"`
+	Alias               *Alias           `xml:"alias,omitempty"`
 }
 
 type LinkState struct {
@@ -365,6 +369,7 @@ type InterfaceSource struct {
 	Network string `xml:"network,attr,omitempty"`
 	Device  string `xml:"dev,attr,omitempty"`
 	Bridge  string `xml:"bridge,attr,omitempty"`
+	Mode    string `xml:"mode,attr,omitempty"`
 }
 
 type Model struct {
@@ -537,6 +542,15 @@ type SecretSpec struct {
 	Private     string      `xml:"private,attr"`
 	Description string      `xml:"description,omitempty"`
 	Usage       SecretUsage `xml:"usage,omitempty"`
+}
+
+type Metadata struct {
+	Interfaces []InterfaceMetadata `xml:"interface,omitempty"`
+}
+
+type InterfaceMetadata struct {
+	Type   string `xml:"type"`
+	Device string `xml:"devname,omitempty"`
 }
 
 func NewMinimalDomainSpec(vmName string) *DomainSpec {

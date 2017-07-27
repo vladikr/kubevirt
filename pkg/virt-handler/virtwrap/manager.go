@@ -52,6 +52,8 @@ type DomainManager interface {
 	RemoveVMSecrets(*v1.VirtualMachine) error
 	SyncVM(*v1.VirtualMachine) (*api.DomainSpec, error)
 	KillVM(*v1.VirtualMachine) error
+	CreateNetwork(netXML *string, netName string) error
+	DestroyNetwork(netName string) error
 }
 
 type LibvirtDomainManager struct {
@@ -59,6 +61,48 @@ type LibvirtDomainManager struct {
 	recorder             record.EventRecorder
 	secretCache          map[string][]string
 	podIsolationDetector isolation.PodIsolationDetector
+}
+
+func (l *LibvirtDomainManager) CreateNetwork(netXML *string, netName string) error {
+	network, err := l.virConn.LookupNetworkByName(netName)
+	if err != nil {
+		network, err = l.virConn.NetworkDefineXML(*netXML)
+		if err != nil {
+			logging.DefaultLogger().Error().Reason(err).Msgf("defining network from xml: %s", *netXML)
+			return err
+		}
+	}
+
+	err = network.SetAutostart(true)
+	if err != nil {
+		logging.DefaultLogger().Error().Reason(err).Msgf("Setting network to autostart: %s", *netXML)
+
+		return goerrors.New(fmt.Sprintf("Cannot set network %s to autostart", netName))
+	}
+
+	active, err := network.IsActive()
+	if err != nil || !active {
+		err = network.Create()
+		if err != nil {
+			return goerrors.New(fmt.Sprintf("Network %s creation failed.", netName))
+		}
+	}
+
+	return nil
+}
+func (l *LibvirtDomainManager) DestroyNetwork(netName string) error {
+	network, err := l.virConn.LookupNetworkByName(netName)
+	if err != nil {
+		logging.DefaultLogger().Warning().Reason(err).Msgf("Failed to find network: %s", netName)
+		return nil
+	}
+	err = network.Destroy()
+	if err != nil {
+		logging.DefaultLogger().Warning().Reason(err).Msgf("Failed to delete network: %s", netName)
+		return err
+	}
+
+	return nil
 }
 
 func (l *LibvirtDomainManager) initiateSecretCache() error {
@@ -211,7 +255,7 @@ func (l *LibvirtDomainManager) SyncVM(vm *v1.VirtualMachine) (*api.DomainSpec, e
 			if err != nil {
 				return nil, err
 			}
-			logging.DefaultLogger().Object(vm).Info().Msg("Domain defined.")
+			logging.DefaultLogger().Object(vm).Info().Msgf("Domain %s defined.", vm.ObjectMeta.Name)
 			l.recorder.Event(vm, kubev1.EventTypeNormal, v1.Created.String(), "VM defined.")
 		} else {
 			logging.DefaultLogger().Object(vm).Error().Reason(err).Msg("Getting the domain failed.")
@@ -240,6 +284,7 @@ func (l *LibvirtDomainManager) SyncVM(vm *v1.VirtualMachine) (*api.DomainSpec, e
 	if cli.IsDown(domState) {
 		err := dom.Create()
 		if err != nil {
+			fmt.Println("Failed to start a vm: ", vm.ObjectMeta.Name, "ERROR: ", err)
 			logging.DefaultLogger().Object(vm).Error().Reason(err).Msg("Starting the VM failed.")
 			return nil, err
 		}

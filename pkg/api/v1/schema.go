@@ -44,12 +44,13 @@ type CloudInitSpec struct {
 }
 
 type DomainSpec struct {
-	Memory  Memory   `json:"memory"`
-	Type    string   `json:"type"`
-	OS      OS       `json:"os"`
-	SysInfo *SysInfo `json:"sysInfo,omitempty"`
-	Devices Devices  `json:"devices"`
-	Clock   *Clock   `json:"clock,omitempty"`
+	Memory   Memory   `json:"memory"`
+	Type     string   `json:"type"`
+	OS       OS       `json:"os"`
+	SysInfo  *SysInfo `json:"sysInfo,omitempty"`
+	Devices  Devices  `json:"devices"`
+	Clock    *Clock   `json:"clock,omitempty"`
+	Metadata Metadata `json:"metadata,omitempty"`
 }
 
 type Memory struct {
@@ -188,8 +189,9 @@ type FilterRef struct {
 
 type InterfaceSource struct {
 	Network string `json:"network,omitempty"`
-	Device  string `json:"device,omitempty"`
+	Device  string `json:"dev,omitempty"`
 	Bridge  string `json:"bridge,omitempty"`
+	Mode    string `json:"mode,omitempty"`
 }
 
 type Model struct {
@@ -340,6 +342,15 @@ type Ballooning struct {
 }
 
 type RandomGenerator struct {
+}
+
+type Metadata struct {
+	Interfaces []InterfaceMetadata `json:"interface,omitempty"`
+}
+
+type InterfaceMetadata struct {
+	Type   string `json:"type"`
+	Device string `json:"devname,omitempty"`
 }
 
 // TODO ballooning, rng, cpu ...

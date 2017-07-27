@@ -43,6 +43,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/kubecli"
 	"kubevirt.io/kubevirt/pkg/logging"
 	registrydisk "kubevirt.io/kubevirt/pkg/registry-disk"
+	"kubevirt.io/kubevirt/pkg/virt-handler/network"
 	"kubevirt.io/kubevirt/pkg/virt-handler/virtwrap"
 	"kubevirt.io/kubevirt/pkg/virt-handler/virtwrap/api"
 )
@@ -386,6 +387,12 @@ func (d *VMHandlerDispatch) processVmUpdate(vm *v1.VirtualMachine, shouldDeleteV
 			return false, err
 		}
 
+		fmt.Println("Deleting networks for VM: ", vm.ObjectMeta.Name)
+		err = network.UnPlugNetworkDevices(vm, d.domainManager)
+		if err != nil {
+			return false, err
+		}
+
 		// remove any defined libvirt secrets associated with this vm
 		err = d.domainManager.RemoveVMSecrets(vm)
 		if err != nil {
@@ -400,6 +407,12 @@ func (d *VMHandlerDispatch) processVmUpdate(vm *v1.VirtualMachine, shouldDeleteV
 	isPending, err := d.configDisk.Define(vm)
 	if err != nil || isPending == true {
 		return isPending, err
+	}
+
+	vm, err = network.PlugNetworkDevices(vm, d.domainManager)
+	if err != nil {
+		logging.DefaultLogger().Error().Reason(err).Msg("Failed to create a virtual interface.")
+		return false, err
 	}
 
 	// Synchronize the VM state
@@ -437,6 +450,8 @@ func (d *VMHandlerDispatch) processVmUpdate(vm *v1.VirtualMachine, shouldDeleteV
 	// if not, delete the Domain first
 	newCfg, err := d.domainManager.SyncVM(vm)
 	if err != nil {
+		logging.DefaultLogger().Error().Reason(err).Msgf("Failed to create a VM %s", vm.ObjectMeta.Name)
+		network.UnPlugNetworkDevices(vm, d.domainManager)
 		return false, err
 	}
 

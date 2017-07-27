@@ -24,6 +24,8 @@ bash ./setup_kubernetes_common.sh
 yum install -y cockpit cockpit-kubernetes
 systemctl enable cockpit.socket && systemctl start cockpit.socket
 
+kubeadm reset
+
 # Create the master
 kubeadm init --pod-network-cidr=10.244.0.0/16 --token abcdef.1234567890123456
 

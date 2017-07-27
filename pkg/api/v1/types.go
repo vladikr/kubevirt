@@ -195,6 +195,15 @@ type VMStatus struct {
 	Phase VMPhase `json:"phase"`
 	// Graphics represent the details of available graphical consoles.
 	Graphics []VMGraphics `json:"graphics"`
+	// Interfaces represent the details of available network interfaces.
+	Interfaces []VMNetworkInterface `json:"vifs,omitempty"`
+}
+
+type VMNetworkInterface struct {
+	Type   string `json:"type"`
+	Device string `json:"devname,omitempty"`
+	IPAddr string `json:"ipaddr,omitempty"`
+	HWAddr string `json:"hwaddr,omitempty"`
 }
 
 type VMGraphics struct {

@@ -42,6 +42,8 @@ import (
 	"kubevirt.io/kubevirt/pkg/virt-handler/virtwrap/cache"
 	"kubevirt.io/kubevirt/pkg/virt-handler/virtwrap/cli"
 	domainerrors "kubevirt.io/kubevirt/pkg/virt-handler/virtwrap/errors"
+	//"github.com/go-kit/kit/util/conn"
+	//"kubevirt.io/kubevirt/pkg/virt-handler/network"
 )
 
 type DomainManager interface {
@@ -49,12 +51,41 @@ type DomainManager interface {
 	RemoveVMSecrets(*v1.VM) error
 	SyncVM(*v1.VM) (*api.DomainSpec, error)
 	KillVM(*v1.VM) error
+	CreateNetwork(netXML *string, netName string) error
 }
 
 type LibvirtDomainManager struct {
 	virConn     cli.Connection
 	recorder    record.EventRecorder
 	secretCache map[string][]string
+}
+
+func (l *LibvirtDomainManager) CreateNetwork(netXML *string, netName string) error {
+	network, err := l.virConn.LookupNetworkByName(netName)
+	if err != nil {
+		network, err = l.virConn.NetworkDefineXML(*netXML)
+		if err != nil {
+			logging.DefaultLogger().Error().Reason(err).Msgf("defining network from xml: %s", *netXML)
+			return err
+		}
+	}
+
+	err = network.SetAutostart(true)
+	if err != nil {
+		logging.DefaultLogger().Error().Reason(err).Msgf("Setting network to autostart: %s", *netXML)
+
+		return goerrors.New(fmt.Sprintf("Cannot set network %s to autostart", netName))
+	}
+
+	active, err := network.IsActive()
+	if err != nil || !active {
+		err = network.Create()
+		if err != nil {
+			return goerrors.New(fmt.Sprintf("Network %s creation failed.", netName))
+		}
+	}
+
+	return nil
 }
 
 func (l *LibvirtDomainManager) initiateSecretCache() error {

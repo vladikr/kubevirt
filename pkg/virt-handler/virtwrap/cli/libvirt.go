@@ -47,6 +47,8 @@ type Connection interface {
 	ListSecrets() ([]string, error)
 	LookupSecretByUUIDString(uuid string) (VirSecret, error)
 	ListAllSecrets(flags libvirt.ConnectListAllSecretsFlags) ([]VirSecret, error)
+	LookupNetworkByName(name string) (*libvirt.Network, error)
+	NetworkDefineXML(xmlConfig string) (*libvirt.Network, error)
 }
 
 type Stream interface {
@@ -271,6 +273,25 @@ func (l *LibvirtConnection) reconnectIfNecessary() (err error) {
 		}
 	}
 	return nil
+}
+
+func (l *LibvirtConnection) LookupNetworkByName(name string) (net *libvirt.Network, err error) {
+	if err = l.reconnectIfNecessary(); err != nil {
+		return
+	}
+	defer l.checkConnectionLost()
+
+	return l.Connect.LookupNetworkByName(name)
+}
+
+func (l *LibvirtConnection) NetworkDefineXML(xml string) (net *libvirt.Network, err error) {
+	if err = l.reconnectIfNecessary(); err != nil {
+		return
+	}
+	defer l.checkConnectionLost()
+
+	net, err = l.Connect.NetworkDefineXML(xml)
+	return
 }
 
 func (l *LibvirtConnection) checkConnectionLost() {

@@ -40,6 +40,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/kubecli"
 	"kubevirt.io/kubevirt/pkg/logging"
 	registrydisk "kubevirt.io/kubevirt/pkg/registry-disk"
+	"kubevirt.io/kubevirt/pkg/virt-handler/network"
 	"kubevirt.io/kubevirt/pkg/virt-handler/virtwrap"
 	"kubevirt.io/kubevirt/pkg/virt-handler/virtwrap/api"
 )
@@ -351,10 +352,29 @@ func (d *VMHandlerDispatch) injectDiskAuth(vm *v1.VM) (*v1.VM, error) {
 	return vm, nil
 }
 
+func InsertBridgeVIF(vm *v1.VM, vif *network.VirtualInterface) (*v1.VM, error) {
+	vmCopy := &v1.VM{}
+	model.Copy(vmCopy, vm)
+
+	for idx, inter := range vmCopy.Spec.Domain.Devices.Interfaces {
+		fmt.Println("interface: ", inter)
+		if inter.Type == "network" {
+			inter.Type = "bridge"
+			inter.Source = v1.InterfaceSource{Bridge: "br-" + vif.Name}
+			inter.MAC = &v1.MAC{MAC: vif.Mac.String()}
+			inter.Model = &v1.Model{Type: "virtio"}
+			vmCopy.Spec.Domain.Devices.Interfaces[idx] = inter
+			fmt.Println("inter upd: ", inter)
+		}
+	}
+	return vmCopy, nil
+}
+
 func (d *VMHandlerDispatch) processVmUpdate(vm *v1.VM, shouldDeleteVm bool) error {
 
 	if shouldDeleteVm {
 		// Since the VM was not in the cache, we delete it
+		//	removeVIF(vm)
 		err := d.domainManager.KillVM(vm)
 		if err != nil {
 			return err
@@ -367,8 +387,21 @@ func (d *VMHandlerDispatch) processVmUpdate(vm *v1.VM, shouldDeleteVm bool) erro
 		return nil
 	}
 
+	vif, err := network.SetupVmNetworkInterface(d.domainManager)
+	if err != nil {
+		logging.DefaultLogger().Error().Reason(err).Msg("Couldn't create virtual interface.")
+		return err
+	}
+
+	// Add VIF to VM config
+	vm, err = InsertBridgeVIF(vm, vif)
+	if err != nil {
+		logging.DefaultLogger().Error().Reason(err).Msg("Couldn't add VIF config.")
+		return err
+	}
+
 	// Synchronize the VM state
-	vm, err := MapPersistentVolumes(vm, d.clientset.CoreV1().RESTClient(), vm.ObjectMeta.Namespace)
+	vm, err = MapPersistentVolumes(vm, d.clientset.CoreV1().RESTClient(), vm.ObjectMeta.Namespace)
 	if err != nil {
 		return err
 	}

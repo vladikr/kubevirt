@@ -20,7 +20,7 @@ FROM fedora:26
 
 MAINTAINER "The KubeVirt Project" <kubevirt-dev@googlegroups.com>
 
-RUN dnf -y install libvirt-client \
+RUN dnf -y install libvirt-client iptables \
     && dnf -y clean all
 
 COPY virt-handler /virt-handler

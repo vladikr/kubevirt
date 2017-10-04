@@ -39,9 +39,11 @@ func ChangeMacAddr(iface string) (net.HardwareAddr, error) {
 		if err != nil {
 			return nil, err
 		}
+		fmt.Printf("old Mac for iface: %s - %s", iface, currentMac)
+		fmt.Printf("Updated Mac for iface: %s - %s", iface, mac)
 		logging.DefaultLogger().Debug().Msgf("Updated Mac for iface: %s - %s", iface, currentMac)
 	}
-	return mac, nil
+	return currentMac, nil
 }
 
 func GetInterfaceByIP(ip string) (*net.Interface, error) {

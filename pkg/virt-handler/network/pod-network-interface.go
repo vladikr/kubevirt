@@ -118,6 +118,13 @@ func (vif *PodNetworkInterface) Plug(domainManager virtwrap.DomainManager) error
 		if err != nil {
 			return err
 		}
+		l, err := netlink.LinkByName(vif.Name)
+		if err == nil {
+			// delete the link
+			if err := netlink.LinkSetUp(l); err != nil {
+				logging.DefaultLogger().Error().Reason(err).Msgf("Failed to set interface up", vif.Name)
+			}
+		}
 
 		return nil
 	})
@@ -240,7 +247,7 @@ func (vif *PodNetworkInterface) DecorateInterfaceMetadata() *v1.InterfaceMetadat
 	return &inter
 }
 
-func (vif *PodNetworkInterface) GetConfigBridge() (*v1.Interface, error) {
+func (vif *PodNetworkInterface) GetConfig() (*v1.Interface, error) {
 	inter := v1.Interface{}
 
 	ifId := strings.Split(vif.Name, "-")
@@ -265,10 +272,31 @@ func (vif *PodNetworkInterface) AddToBridge() (string, error) {
 	}
 	iface, _ := netlink.LinkByName(vif.Name)
 	netlink.LinkSetMaster(iface, mybridge)
+
+	// Set address on the bridge
+	ipCopy := &net.IPNet{}
+
+	errs := model.Copy(ipCopy, vif.IPAddr)
+	if errs != nil {
+		for _, err := range errs {
+			logging.DefaultLogger().Error().Reason(err).Msg("Failed to copy model")
+		}
+	} else {
+		dns := ipCopy.IP.To4()
+		if dns != nil {
+			dns[3] = 254
+		}
+
+		addr, _ := netlink.ParseAddr(dns.String() + "/8")
+		netlink.AddrAdd(mybridge, addr)
+		if err := netlink.LinkSetUp(mybridge); err != nil {
+			logging.DefaultLogger().Error().Reason(err).Msgf("Failed to set interface up", la.Name)
+		}
+	}
 	return la.Name, nil
 }
 
-func (vif *PodNetworkInterface) GetConfig() (*v1.Interface, error) {
+func (vif *PodNetworkInterface) GetMACVTAPConfig() (*v1.Interface, error) {
 
 	/*
 		inter := libvirtxml.DomainInterface{

@@ -2730,6 +2730,18 @@
      }
     }
    },
+   "v1.VirtualMachineNetworkInterface": {
+    "properties": {
+     "ipAddress": {
+      "description": "IP address of a Virtual Machine interface",
+      "type": "string"
+     },
+     "mac": {
+      "description": "Hardware address of a Virtual Machine interface",
+      "type": "string"
+     }
+    }
+   },
    "v1.VirtualMachineReplicaSet": {
     "description": "VM is *the* VM Definition. It represents a virtual machine in the runtime environment of kubernetes.\n+k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object",
     "properties": {
@@ -2828,6 +2840,13 @@
      "phase": {
       "description": "Phase is the status of the VM in kubernetes world. It is not the VM status, but partially correlates to it.",
       "type": "string"
+     },
+     "vifs": {
+      "description": "Interfaces represent the details of available network interfaces.",
+      "type": "array",
+      "items": {
+       "$ref": "#/definitions/v1.VirtualMachineNetworkInterface"
+      }
      }
     }
    },

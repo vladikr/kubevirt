@@ -31,6 +31,7 @@ import (
 
 	"github.com/vishvananda/netlink"
 
+	"kubevirt.io/kubevirt/pkg/api/v1"
 	"kubevirt.io/kubevirt/pkg/log"
 	"kubevirt.io/kubevirt/pkg/precond"
 	"kubevirt.io/kubevirt/pkg/virt-launcher/virtwrap/api"
@@ -164,7 +165,7 @@ func initHandler() {
 // random address and IP will be deleted. This will also create a macvlan device with a fake IP.
 // DHCP server will be started and bounded to the macvlan interface to server the original pod ip
 // to the guest OS
-func SetupDefaultPodNetwork(domain *api.Domain) error {
+func SetupDefaultPodNetwork(vm *v1.VirtualMachine, domain *api.Domain) error {
 	precond.MustNotBeNil(domain)
 	initHandler()
 
@@ -274,14 +275,14 @@ func SetupDefaultPodNetwork(domain *api.Domain) error {
 	// Start DHCP Server
 	Handler.StartDHCP(nic, fakeaddr)
 
-	if err := plugNetworkDevice(domain, nic); err != nil {
+	if err := plugNetworkDevice(vm, domain, nic); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func plugNetworkDevice(domain *api.Domain, vif *VIF) error {
+func plugNetworkDevice(vm *v1.VirtualMachine, domain *api.Domain, vif *VIF) error {
 
 	// get VIF config
 	ifconf, err := decorateInterfaceConfig(vif)
@@ -298,6 +299,10 @@ func plugNetworkDevice(domain *api.Domain, vif *VIF) error {
 		domain.Spec.Devices.Interfaces[idx] = *ifconf
 	}
 
+	// Update vm status with interface details
+	ifaceStatus := decorateInterfaceStatus(vif)
+	vm.Status.Interfaces = append(vm.Status.Interfaces, *ifaceStatus)
+
 	return nil
 }
 
@@ -311,4 +316,11 @@ func decorateInterfaceConfig(vif *VIF) (*api.Interface, error) {
 	inter.Model = &api.Model{Type: "virtio"}
 
 	return &inter, nil
+}
+
+func decorateInterfaceStatus(vif *VIF) *v1.VirtualMachineNetworkInterface {
+	iface := v1.VirtualMachineNetworkInterface{}
+	iface.IP = vif.IP.String()
+	iface.MAC = vif.MAC.String()
+	return &iface
 }

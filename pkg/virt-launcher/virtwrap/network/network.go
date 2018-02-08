@@ -26,8 +26,11 @@ package network
 */
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"net"
+	"os"
 
 	"github.com/vishvananda/netlink"
 
@@ -46,6 +49,13 @@ const (
 	macVlanFakeIP    = "10.11.12.13/24"
 	guestDNS         = "8.8.8.8"
 )
+
+var interfaceCacheFile = "/var/run/kubevirt-private/interface-cache.json"
+
+// only used by unit test suite
+func setInterfaceCacheFile(path string) {
+	interfaceCacheFile = path
+}
 
 type VIF struct {
 	Name    string
@@ -66,7 +76,7 @@ type NetworkHandler interface {
 	ParseAddr(s string) (*netlink.Addr, error)
 	ChangeMacAddr(iface string) (net.HardwareAddr, error)
 	GetMacDetails(iface string) (net.HardwareAddr, error)
-	StartDHCP(vm *v1.VirtualMachine, nic *VIF, serverAddr *netlink.Addr)
+	StartDHCP(nic *VIF, serverAddr *netlink.Addr)
 }
 
 type NetworkUtilsHandler struct{}
@@ -136,7 +146,7 @@ func (h *NetworkUtilsHandler) ChangeMacAddr(iface string) (net.HardwareAddr, err
 	return currentMac, nil
 }
 
-func (h *NetworkUtilsHandler) StartDHCP(vm *v1.VirtualMachine, nic *VIF, serverAddr *netlink.Addr) {
+func (h *NetworkUtilsHandler) StartDHCP(nic *VIF, serverAddr *netlink.Addr) {
 	// panic in case the DHCP server failed during the vm creation
 	// but ignore dhcp errors when the vm is destroyed or shutting down
 	if err := DHCPServer(
@@ -147,7 +157,7 @@ func (h *NetworkUtilsHandler) StartDHCP(vm *v1.VirtualMachine, nic *VIF, serverA
 		serverAddr.IP,
 		nic.Gateway,
 		net.ParseIP(guestDNS),
-	); err != nil && !vm.IsFinal() {
+	); err != nil {
 		log.Log.Errorf("failed to run DHCP: %v", err)
 		panic(err)
 	}
@@ -168,28 +178,77 @@ func initHandler() {
 // random address and IP will be deleted. This will also create a macvlan device with a fake IP.
 // DHCP server will be started and bounded to the macvlan interface to server the original pod ip
 // to the guest OS
-func SetupDefaultPodNetwork(vm *v1.VirtualMachine, domain *api.Domain) error {
+func SetupDefaultPodNetwork(domain *api.Domain) error {
 	precond.MustNotBeNil(domain)
 	initHandler()
-	vif := &VIF{Name: podInterface}
 
-	podNicLink, err := discoverPodNetworkInterface(vif)
+	ifconf, err := getCachedInterface()
 	if err != nil {
 		return err
 	}
-	if err := plugNetworkDevice(vm, domain, vif); err != nil {
-		return err
-	}
-	if err := preparePodNetworkInterfaces(vif, podNicLink); err != nil {
-		log.Log.Reason(err).Critical("failed to prepared pod networking")
-		panic(err)
+
+	if ifconf == nil {
+		vif := &VIF{Name: podInterface}
+		podNicLink, err := discoverPodNetworkInterface(vif)
+		if err != nil {
+			return err
+		}
+
+		if err := preparePodNetworkInterfaces(vif, podNicLink); err != nil {
+			log.Log.Reason(err).Critical("failed to prepared pod networking")
+			panic(err)
+		}
+
+		// Start DHCP Server
+		fakeServerAddr, _ := netlink.ParseAddr(macVlanFakeIP)
+		go Handler.StartDHCP(vif, fakeServerAddr)
+
+		// After the network is configured, cache the result
+		// in case this function is called again.
+		ifconf = decorateInterfaceConfig(vif)
+		err = setCachedInterface(ifconf)
+		if err != nil {
+			panic(err)
+		}
 	}
 
-	// Start DHCP Server
-	fakeServerAddr, _ := netlink.ParseAddr(macVlanFakeIP)
-	go Handler.StartDHCP(vm, vif, fakeServerAddr)
+	// TODO:(vladikr) Currently we support only one interface per vm.
+	// Improve this once we'll start supporting more.
+	if len(domain.Spec.Devices.Interfaces) == 0 {
+		domain.Spec.Devices.Interfaces = append(domain.Spec.Devices.Interfaces, *ifconf)
+	} else {
+		domain.Spec.Devices.Interfaces[0] = *ifconf
+	}
 
 	return nil
+}
+
+func setCachedInterface(ifconf *api.Interface) error {
+	buf, err := json.MarshalIndent(&ifconf, "", "  ")
+	if err != nil {
+		return fmt.Errorf("error marshaling interface cache: %v", err)
+	}
+	err = ioutil.WriteFile(interfaceCacheFile, buf, 0644)
+	if err != nil {
+		return fmt.Errorf("error writing interface cache %v", err)
+	}
+	return nil
+}
+
+func getCachedInterface() (*api.Interface, error) {
+	buf, err := ioutil.ReadFile(interfaceCacheFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	ifconf := api.Interface{}
+	err = json.Unmarshal(buf, &ifconf)
+	if err != nil {
+		return nil, fmt.Errorf("error unmarshaling interface: %v", err)
+	}
+	return &ifconf, nil
 }
 
 func discoverPodNetworkInterface(nic *VIF) (netlink.Link, error) {
@@ -300,31 +359,20 @@ func preparePodNetworkInterfaces(nic *VIF, nicLink netlink.Link) error {
 	return nil
 }
 
-func plugNetworkDevice(vm *v1.VirtualMachine, domain *api.Domain, vif *VIF) error {
+func plugNetworkDevice(domain *api.Domain, vif *VIF) {
 
 	// get VIF config
-	ifconf, err := decorateInterfaceConfig(vif)
-	if err != nil {
-		log.Log.Reason(err).Error("failed to get VIF config.")
-		return err
-	}
+	ifconf := decorateInterfaceConfig(vif)
 
 	//TODO:(vladikr) Currently we support only one interface per vm. Improve this once we'll start supporting more.
 	if len(domain.Spec.Devices.Interfaces) == 0 {
 		domain.Spec.Devices.Interfaces = append(domain.Spec.Devices.Interfaces, *ifconf)
+	} else {
+		domain.Spec.Devices.Interfaces[0] = *ifconf
 	}
-	for idx, _ := range domain.Spec.Devices.Interfaces {
-		domain.Spec.Devices.Interfaces[idx] = *ifconf
-	}
-
-	// Update vm status with interface details
-	ifaceStatus := decorateInterfaceStatus(vif)
-	vm.Status.Interfaces = append(vm.Status.Interfaces, *ifaceStatus)
-
-	return nil
 }
 
-func decorateInterfaceConfig(vif *VIF) (*api.Interface, error) {
+func decorateInterfaceConfig(vif *VIF) *api.Interface {
 
 	inter := api.Interface{}
 	inter.Type = "direct"
@@ -333,7 +381,7 @@ func decorateInterfaceConfig(vif *VIF) (*api.Interface, error) {
 	inter.MAC = &api.MAC{MAC: vif.MAC.String()}
 	inter.Model = &api.Model{Type: "virtio"}
 
-	return &inter, nil
+	return &inter
 }
 
 func decorateInterfaceStatus(vif *VIF) *v1.VirtualMachineNetworkInterface {

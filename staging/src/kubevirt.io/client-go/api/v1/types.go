@@ -355,6 +355,8 @@ type VirtualMachineInstanceMigrationState struct {
 	AbortStatus MigrationAbortStatus `json:"abortStatus,omitempty"`
 	// The VirtualMachineInstanceMigration object associated with this migration
 	MigrationUID types.UID `json:"migrationUid,omitempty"`
+	// Indicates that VMI Guest time sync is required
+	GuestTimeSyncRequired bool `json:"guestTimeSyncRequired,omitempty"`
 }
 
 // ---

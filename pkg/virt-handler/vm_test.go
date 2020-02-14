@@ -857,10 +857,10 @@ var _ = Describe("VirtualMachineInstance", func() {
 				SourceNode:               host,
 				MigrationUID:             "123",
 				TargetNodeDomainDetected: true,
-				GuestTimeSyncRequired: true,
-				Completed: true,
-				StartTimestamp: &now,
-				EndTimestamp: &now,
+				GuestTimeSyncRequired:    true,
+				Completed:                true,
+				StartTimestamp:           &now,
+				EndTimestamp:             &now,
 			}
 
 			mockWatchdog.CreateFile(vmi)
@@ -876,7 +876,6 @@ var _ = Describe("VirtualMachineInstance", func() {
 					},
 				},
 			}
-
 
 			vmiFeeder.Add(vmi)
 			domainFeeder.Add(domain)
@@ -919,10 +918,10 @@ var _ = Describe("VirtualMachineInstance", func() {
 				SourceNode:               host,
 				MigrationUID:             "123",
 				TargetNodeDomainDetected: true,
-				GuestTimeSyncRequired: true,
-				Completed: true,
-				StartTimestamp: &now,
-				EndTimestamp: &now,
+				GuestTimeSyncRequired:    true,
+				Completed:                true,
+				StartTimestamp:           &now,
+				EndTimestamp:             &now,
 			}
 
 			mockWatchdog.CreateFile(vmi)

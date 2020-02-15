@@ -418,8 +418,6 @@ func (d *VirtualMachineController) updateVMIStatus(vmi *v1.VirtualMachineInstanc
 			vmi.Status.NodeName = migrationHost
 			vmi.Status.MigrationState.Completed = true
 			d.recorder.Event(vmi, k8sv1.EventTypeNormal, v1.Migrated.String(), fmt.Sprintf("The VirtualMachineInstance migrated to node %s.", migrationHost))
-			// require a VMI guest time sync on the destination
-			vmi.Status.MigrationState.GuestTimeSyncRequired = true
 		}
 
 		if !reflect.DeepEqual(oldStatus, vmi.Status) {
@@ -471,7 +469,6 @@ func (d *VirtualMachineController) updateVMIStatus(vmi *v1.VirtualMachineInstanc
 			vmi.Status.MigrationMethod = v1.LiveMigration
 		}
 	}
-
 	// Update the condition when GA is connected
 	channelConnected := false
 	if domain != nil {
@@ -487,6 +484,7 @@ func (d *VirtualMachineController) updateVMIStatus(vmi *v1.VirtualMachineInstanc
 			}
 		}
 	}
+
 
 	switch {
 	case channelConnected && !condManager.HasCondition(vmi, v1.VirtualMachineInstanceAgentConnected):
@@ -517,31 +515,6 @@ func (d *VirtualMachineController) updateVMIStatus(vmi *v1.VirtualMachineInstanc
 	} else if condManager.HasCondition(vmi, v1.VirtualMachineInstancePaused) {
 		log.Log.Object(vmi).V(3).Info("Removing paused condition")
 		condManager.RemoveCondition(vmi, v1.VirtualMachineInstancePaused)
-	}
-
-	// Update guest time after a migration
-	if vmi.Status.MigrationState != nil && vmi.Status.MigrationState.GuestTimeSyncRequired {
-		timeSyncRequestTimeoutInSeconds := 5.0
-		isConditionRemoved := false
-		if channelConnected {
-			err := d.setVMIGuestTime(vmi)
-			if err == nil {
-				vmi.Status.MigrationState.GuestTimeSyncRequired = false
-				isConditionRemoved = true
-			}
-		}
-		if !isConditionRemoved {
-			var timeDiff time.Duration
-			for _, c := range vmi.Status.Conditions {
-				if c.Type == v1.VirtualMachineInstanceAgentConnected {
-					timeDiff = v12.Now().Sub((c.LastProbeTime).Time)
-					break
-				}
-			}
-			if timeDiff.Seconds() > timeSyncRequestTimeoutInSeconds {
-				vmi.Status.MigrationState.GuestTimeSyncRequired = false
-			}
-		}
 	}
 
 	condManager.CheckFailure(vmi, syncError, "Synchronizing with the Domain failed.")
@@ -766,10 +739,11 @@ func (d *VirtualMachineController) migrationTargetExecute(key string,
 			return err
 		}
 
-		if domainExists && vmi.Status.MigrationState != nil {
+		if domainExists && vmi.Status.MigrationState != nil && !vmi.Status.MigrationState.TargetNodeDomainDetected {
 			// record that we've see the domain populated on the target's node
 			log.Log.Object(vmi).Info("The target node received the migrated domain")
 			vmiCopy.Status.MigrationState.TargetNodeDomainDetected = true
+			d.setVMIGuestTime(vmi)
 		}
 
 		destSrcPortsMap := d.migrationProxy.GetTargetListenerPorts(string(vmi.UID))

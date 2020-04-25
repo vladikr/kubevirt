@@ -785,11 +785,24 @@ func schema_kubevirtio_client_go_api_v1_Devices(ref common.ReferenceCallback) co
 							},
 						},
 					},
+					"filesystem": {
+						SchemaProps: spec.SchemaProps{
+							Description: "Filesystem describes virtiofs filesystem which is connected to the vmi.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Ref: ref("kubevirt.io/kubevirt/staging/src/kubevirt.io/client-go/api/v1.Filesystem"),
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
 		Dependencies: []string{
-			"kubevirt.io/kubevirt/staging/src/kubevirt.io/client-go/api/v1.Disk", "kubevirt.io/kubevirt/staging/src/kubevirt.io/client-go/api/v1.GPU", "kubevirt.io/kubevirt/staging/src/kubevirt.io/client-go/api/v1.Input", "kubevirt.io/kubevirt/staging/src/kubevirt.io/client-go/api/v1.Interface", "kubevirt.io/kubevirt/staging/src/kubevirt.io/client-go/api/v1.Rng", "kubevirt.io/kubevirt/staging/src/kubevirt.io/client-go/api/v1.Watchdog"},
+			"kubevirt.io/kubevirt/staging/src/kubevirt.io/client-go/api/v1.Disk", "kubevirt.io/kubevirt/staging/src/kubevirt.io/client-go/api/v1.Filesystem", "kubevirt.io/kubevirt/staging/src/kubevirt.io/client-go/api/v1.GPU", "kubevirt.io/kubevirt/staging/src/kubevirt.io/client-go/api/v1.Input", "kubevirt.io/kubevirt/staging/src/kubevirt.io/client-go/api/v1.Interface", "kubevirt.io/kubevirt/staging/src/kubevirt.io/client-go/api/v1.Rng", "kubevirt.io/kubevirt/staging/src/kubevirt.io/client-go/api/v1.Watchdog"},
 	}
 }
 

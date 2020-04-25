@@ -653,7 +653,24 @@ func Convert_v1_VirtualMachine_To_api_Domain(vmi *v1.VirtualMachineInstance, dom
 		Placement: "static",
 		CPUs:      calculateRequestedVCPUs(domain.Spec.CPU.Topology),
 	}
-
+	// Add a NUMA node element
+	// TODO:requires adjustments!)
+	var guestMem Memory
+	if guestMem, err = QuantityToByte(*getVirtualMemory(vmi)); err != nil {
+		return err
+	}
+	numaCpus := domain.Spec.VCPU.CPUs - 1
+	domain.Spec.CPU.NUMA = &NUMA{
+		Cells: []NUMACell{
+			{
+				ID:           "0",
+				CPUs:         fmt.Sprintf("0-%d", numaCpus),
+				Memory:       fmt.Sprintf("%d", guestMem.Value),
+				Unit:         "B",
+				MemoryAccess: "shared",
+			},
+		},
+	}
 	if _, err := os.Stat("/dev/kvm"); os.IsNotExist(err) {
 		if c.UseEmulation {
 			logger := log.DefaultLogger()
@@ -784,8 +801,20 @@ func Convert_v1_VirtualMachine_To_api_Domain(vmi *v1.VirtualMachineInstance, dom
 	}
 
 	if vmi.Spec.Domain.Memory != nil && vmi.Spec.Domain.Memory.Hugepages != nil {
+		pageSize := vmi.Spec.Domain.Memory.Hugepages.PageSize
+		sizeHP, unitHP := pageSize[0], pageSize[1:]
 		domain.Spec.MemoryBacking = &MemoryBacking{
-			HugePages: &HugePages{},
+			HugePages: &HugePages{
+				HugePage: []HugePage{
+					{
+						Size: string(sizeHP),
+						Unit: fmt.Sprintf("%sB", string(unitHP)),
+					},
+				},
+			},
+			Access: &MemoryBackingAccess{
+				Mode: "shared",
+			},
 		}
 	}
 
@@ -906,6 +935,50 @@ func Convert_v1_VirtualMachine_To_api_Domain(vmi *v1.VirtualMachineInstance, dom
 		}
 
 		domain.Spec.Devices.Disks = append(domain.Spec.Devices.Disks, newDisk)
+	}
+
+	// Handle virtioFS
+	for _, fs := range vmi.Spec.Domain.Devices.Filesystems {
+		newFS := FilesystemDevice{}
+
+		/*err := Convert_v1_FS_To_api_FS(&disk, &newDisk, devicePerBus, numBlkQueues)
+		if err != nil {
+			return err
+		}*/
+		newFS.Type = "mount"
+		newFS.AccessMode = "passthrough"
+		newFS.Driver = &FilesystemDriver{
+			Type:  "virtiofs",
+			Queue: "1024",
+		}
+		newFS.Binary = &FilesystemBinary{
+			Path:  "/usr/libexec/virtiofsd",
+			Xattr: "on",
+			Cache: &FilesystemBinaryCache{
+				Mode: "always",
+			},
+			Lock: &FilesystemBinaryLock{
+				Posix: "on",
+				Flock: "on",
+			},
+		}
+		newFS.Target = &FilesystemTarget{
+			Dir: fs.Name,
+		}
+
+		volume := volumes[fs.Name]
+		if volume == nil {
+			return fmt.Errorf("No matching volume with name %s found", fs.Name)
+		}
+		volDir, _ := filepath.Split(GetFilesystemVolumePath(volume.Name))
+		newFS.Source = &FilesystemSource{}
+		newFS.Source.Dir = volDir
+		/* will need to figure this part later
+		err = Convert_v1_Volume_To_api_Disk(volume, &newDisk, c, volumeIndices[disk.Name])
+		if err != nil {
+			return err
+		}*/
+		domain.Spec.Devices.Filesystems = append(domain.Spec.Devices.Filesystems, newFS)
 	}
 
 	if vmi.Spec.Domain.Devices.Watchdog != nil {

@@ -34,6 +34,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/pborman/uuid"
 	k8sv1 "k8s.io/api/core/v1"
+	kubev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
@@ -195,6 +196,129 @@ var _ = Describe("Storage", func() {
 				Expect(err).ToNot(HaveOccurred())
 			})
 
+		})
+		Context("with an Fedora shared NFS PVC, cloud init and service account", func() {
+			var pvName string
+			var vmi *v1.VirtualMachineInstance
+			BeforeEach(func() {
+				tests.SkipMigrationTestIfRunnigOnKindInfra()
+				pvName = "test-nfs" + rand.String(48)
+				// Prepare a NFS backed PV
+				By("Starting an NFS POD")
+				os := string(tests.ContainerDiskFedora)
+				nfsIP := tests.CreateNFSTargetPOD(os)
+				// create a new PV and PVC (PVs can't be reused)
+				By("create a new NFS PV and PVC")
+				tests.CreateNFSPvAndPvc(pvName, "5Gi", nfsIP, os)
+			})
+
+			AfterEach(func() {
+				By("Deleting the VMI")
+				Expect(virtClient.VirtualMachineInstance(vmi.Namespace).Delete(vmi.Name, &metav1.DeleteOptions{})).To(Succeed())
+
+				By("Waiting for VMI to disappear")
+				tests.WaitForVirtualMachineToDisappearWithTimeout(vmi, 120)
+				// PVs can't be reused
+				tests.DeletePvAndPvc(pvName)
+
+				By("Deleting NFS pod")
+				Expect(virtClient.CoreV1().Pods(tests.NamespaceTestDefault).Delete(tests.NFSTargetName, &metav1.DeleteOptions{})).To(Succeed())
+				By("Waiting for NFS pod to disappear")
+				tests.WaitForPodToDisappearWithTimeout(tests.NFSTargetName, 120)
+			})
+			FIt("should start a VMI with virtiofs", func() {
+				hugepageSize := "2Mi"
+				memory := "64Mi"
+				guestMemory := "None"
+				//hugepageSize := "1Gi"
+				//memory := "1Gi"
+				// Start the VirtualMachineInstance with the PVC attached
+				By("Creating the  VMI")
+				vmi = tests.NewRandomVMIWithPVCFS(pvName)
+				vmi.Labels = map[string]string{
+					"debugLogs": "true",
+					"virtiofsdDebugLogs": "true",
+				}
+				//vmi.Spec.Domain.Resources.Requests[k8sv1.ResourceMemory] = resource.MustParse(fedoraVMSize)
+				hugepageType := kubev1.ResourceName(kubev1.ResourceHugePagesPrefix + hugepageSize)
+
+				nodeWithHugepages := tests.GetNodeWithHugepages(virtClient, hugepageType)
+				if nodeWithHugepages == nil {
+					Skip(fmt.Sprintf("No node with hugepages %s capacity", hugepageType))
+				}
+				// initialHugepages := nodeWithHugepages.Status.Capacity[resourceName]
+				vmi.Spec.Affinity = &kubev1.Affinity{
+					NodeAffinity: &kubev1.NodeAffinity{
+						RequiredDuringSchedulingIgnoredDuringExecution: &kubev1.NodeSelector{
+							NodeSelectorTerms: []kubev1.NodeSelectorTerm{
+								{
+									MatchExpressions: []kubev1.NodeSelectorRequirement{
+										{Key: "kubernetes.io/hostname", Operator: kubev1.NodeSelectorOpIn, Values: []string{nodeWithHugepages.Name}},
+									},
+								},
+							},
+						},
+					},
+				}
+				vmi.Spec.Domain.Resources.Requests[kubev1.ResourceMemory] = resource.MustParse(memory)
+
+				vmi.Spec.Domain.Memory = &v1.Memory{
+					Hugepages: &v1.Hugepages{PageSize: hugepageSize},
+				}
+				if guestMemory != "None" {
+					guestMemReq := resource.MustParse(guestMemory)
+					vmi.Spec.Domain.Memory.Guest = &guestMemReq
+				}
+				vmi.Spec.Domain.Devices.Rng = &v1.Rng{}
+				tests.AddUserData(vmi, "cloud-init", "#!/bin/bash\necho 'hello'\n")
+
+				// add userdata for guest agent and service account mount
+				/*mountSvcAccCommands := fmt.Sprintf(`
+					mkdir /mnt/servacc
+					mount /dev/$(lsblk --nodeps -no name,serial | grep %s | cut -f1 -d' ') /mnt/servacc
+				`, secretDiskSerial)
+				userData := fmt.Sprintf("%s\n%s", tests.GetGuestAgentUserData(), mountSvcAccCommands)
+				tests.AddUserData(vmi, "cloud-init", userData)
+
+				tests.AddServiceAccountDisk(vmi, "default")
+				disks := vmi.Spec.Domain.Devices.Disks
+				disks[len(disks)-1].Serial = secretDiskSerial
+				*/
+				vmi = tests.RunVMIAndExpectLaunchIgnoreWarnings(vmi, 180)
+
+				// Wait for cloud init to finish and start the agent inside the vmi.
+				tests.WaitAgentConnected(virtClient, vmi)
+
+				By("Checking that the VirtualMachineInstance console has expected output")
+				expecter, err := tests.LoggedInFedoraExpecter(vmi)
+				Expect(err).ToNot(HaveOccurred(), "Should be able to login to the Fedora VM")
+				expecter.Close()
+				/*
+					// execute a migration, wait for finalized state
+					By("Starting the Migration for iteration")
+					migration := tests.NewRandomMigration(vmi.Name, vmi.Namespace)
+					migrationUID := runMigrationAndExpectCompletion(migration, migrationWaitTime)
+
+					// check VMI, confirm migration state
+					confirmVMIPostMigration(vmi, migrationUID)
+
+					// Is agent connected after migration
+					tests.WaitAgentConnected(virtClient, vmi)
+
+					By("Checking that the migrated VirtualMachineInstance console has expected output")
+					expecter, err = tests.ReLoggedInFedoraExpecter(vmi, 60)
+					defer expecter.Close()
+					Expect(err).ToNot(HaveOccurred(), "Should stay logged in to the migrated VM")
+
+					By("Checking that the service account is mounted")
+					_, err = expecter.ExpectBatch([]expect.Batcher{
+						&expect.BSnd{S: "cat /mnt/servacc/namespace\n"},
+						&expect.BExp{R: tests.NamespaceTestDefault},
+					}, 30*time.Second)
+					Expect(err).ToNot(HaveOccurred(), "Should be able to access the mounted service account file") */
+				time.Sleep(5000)
+
+			})
 		})
 
 		Context("[rfe_id:3106][crit:medium][vendor:cnv-qe@redhat.com][level:component]With ephemeral alpine PVC", func() {

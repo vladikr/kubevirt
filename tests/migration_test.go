@@ -150,7 +150,7 @@ var _ = Describe("[rfe_id:393][crit:high][vendor:cnv-qe@redhat.com][level:system
 		return runVMIAndExpectLaunchWithIgnoreWarningArg(vmi, timeout, false)
 	}
 
-	runVMIAndExpectLaunchIgnoreWarnings := func(vmi *v1.VirtualMachineInstance, timeout int) *v1.VirtualMachineInstance {
+	RunVMIAndExpectLaunchIgnoreWarnings := func(vmi *v1.VirtualMachineInstance, timeout int) *v1.VirtualMachineInstance {
 		return runVMIAndExpectLaunchWithIgnoreWarningArg(vmi, timeout, true)
 	}
 
@@ -900,7 +900,7 @@ var _ = Describe("[rfe_id:393][crit:high][vendor:cnv-qe@redhat.com][level:system
 				disks := vmi.Spec.Domain.Devices.Disks
 				disks[len(disks)-1].Serial = secretDiskSerial
 
-				vmi = runVMIAndExpectLaunchIgnoreWarnings(vmi, 180)
+				vmi = RunVMIAndExpectLaunchIgnoreWarnings(vmi, 180)
 
 				// Wait for cloud init to finish and start the agent inside the vmi.
 				tests.WaitAgentConnected(virtClient, vmi)

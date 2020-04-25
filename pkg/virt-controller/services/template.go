@@ -56,10 +56,12 @@ const TunDevice = "devices.kubevirt.io/tun"
 const VhostNetDevice = "devices.kubevirt.io/vhost-net"
 
 const debugLogs = "debugLogs"
+const virtiofsDebugLogs = "virtiofsdDebugLogs"
 
 const MultusNetworksAnnotation = "k8s.v1.cni.cncf.io/networks"
 
 const CAP_NET_ADMIN = "NET_ADMIN"
+const CAP_SYS_ADMIN = "SYS_ADMIN"
 const CAP_SYS_NICE = "SYS_NICE"
 
 // LibvirtStartupDelay is added to custom liveness and readiness probes initial delay value.
@@ -79,6 +81,7 @@ const MULTUS_DEFAULT_NETWORK_CNI_ANNOTATION = "v1.multus-cni.io/default-network"
 const ISTIO_KUBEVIRT_ANNOTATION = "traffic.sidecar.istio.io/kubevirtInterfaces"
 
 const ENV_VAR_LIBVIRT_DEBUG_LOGS = "LIBVIRT_DEBUG_LOGS"
+const ENV_VAR_VIRTIOFSD_DEBUG_LOGS = "VIRTIOFSD_DEBUG_LOGS"
 
 type TemplateService interface {
 	RenderLaunchManifest(*v1.VirtualMachineInstance) (*k8sv1.Pod, error)
@@ -823,6 +826,9 @@ func (t *templateService) RenderLaunchManifest(vmi *v1.VirtualMachineInstance) (
 	if _, ok := vmi.Labels[debugLogs]; ok {
 		compute.Env = append(compute.Env, k8sv1.EnvVar{Name: ENV_VAR_LIBVIRT_DEBUG_LOGS, Value: "1"})
 	}
+	if _, ok := vmi.Labels[virtiofsDebugLogs]; ok {
+		compute.Env = append(compute.Env, k8sv1.EnvVar{Name: ENV_VAR_VIRTIOFSD_DEBUG_LOGS, Value: "1"})
+	}
 
 	// Make sure the compute container is always the first since the mutating webhook shipped with the sriov operator
 	// for adding the requested resources to the pod will add them to the first container of the list
@@ -1084,6 +1090,9 @@ func getRequiredCapabilities(vmi *v1.VirtualMachineInstance) []k8sv1.Capability 
 		(vmi.Spec.Domain.Devices.AutoattachPodInterface == nil) ||
 		(*vmi.Spec.Domain.Devices.AutoattachPodInterface == true) {
 		res = append(res, CAP_NET_ADMIN)
+	}
+	if _, ok := vmi.Labels[virtiofsDebugLogs]; ok {
+		res = append(res, CAP_SYS_ADMIN)
 	}
 	// add a CAP_SYS_NICE capability to allow setting cpu affinity
 	res = append(res, CAP_SYS_NICE)

@@ -172,6 +172,7 @@ func (Devices) SwaggerDoc() map[string]string {
 		"blockMultiQueue":            "Whether or not to enable virtio multi-queue for block devices\n+optional",
 		"networkInterfaceMultiqueue": "If specified, virtual network interfaces configured with a virtio bus will also enable the vhost multiqueue feature\n+optional",
 		"gpus":                       "Whether to attach a GPU device to the vmi.\n+optional",
+		"filesystem":                 "Filesystem describes virtiofs filesystem which is connected to the vmi.",
 	}
 }
 
@@ -186,6 +187,12 @@ func (Input) SwaggerDoc() map[string]string {
 func (GPU) SwaggerDoc() map[string]string {
 	return map[string]string{
 		"name": "Name of the GPU device as exposed by a device plugin",
+	}
+}
+
+func (Filesystem) SwaggerDoc() map[string]string {
+	return map[string]string{
+		"name": "Name is the device name",
 	}
 }
 

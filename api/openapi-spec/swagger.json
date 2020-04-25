@@ -4699,6 +4699,13 @@
        "$ref": "#/definitions/v1.Disk"
       }
      },
+     "filesystem": {
+      "description": "Filesystem describes virtiofs filesystem which is connected to the vmi.",
+      "type": "array",
+      "items": {
+       "$ref": "#/definitions/v1.Filesystem"
+      }
+     },
      "gpus": {
       "description": "Whether to attach a GPU device to the vmi.\n+optional",
       "type": "array",
@@ -4992,6 +4999,17 @@
      "smm": {
       "description": "SMM enables/disables System Management Mode.\nTSEG not yet implemented.\n+optional",
       "$ref": "#/definitions/v1.FeatureState"
+     }
+    }
+   },
+   "v1.Filesystem": {
+    "required": [
+     "name"
+    ],
+    "properties": {
+     "name": {
+      "description": "Name is the device name",
+      "type": "string"
      }
     }
    },

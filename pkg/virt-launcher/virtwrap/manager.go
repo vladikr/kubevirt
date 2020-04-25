@@ -1214,6 +1214,9 @@ func (l *LibvirtDomainManager) SyncVMI(vmi *v1.VirtualMachineInstance, useEmulat
 			return nil, err
 		}
 	}
+	// LOG xml
+	xmlstr1, _ := dom.GetXMLDesc(0)
+	logger.Infof("Domain defined: %s", xmlstr1)
 
 	// TODO Suspend, Pause, ..., for now we only support reaching the running state
 	// TODO for migration and error detection we also need the state change reason

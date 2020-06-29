@@ -20,11 +20,13 @@
 package device_manager
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"time"
 
 	"kubevirt.io/client-go/log"
+	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
 )
 
 const (
@@ -43,8 +45,8 @@ type DeviceController struct {
 	backoff       []time.Duration
 }
 
-func NewDeviceController(host string, maxDevices int) *DeviceController {
-	return &DeviceController{
+func NewDeviceController(host string, maxDevices int, clusterConfig *virtconfig.ClusterConfig) *DeviceController {
+	controller := &DeviceController{
 		devicePlugins: []GenericDevice{
 			NewGenericDevicePlugin(KVMName, KVMPath, maxDevices, false),
 			NewGenericDevicePlugin(TunName, TunPath, maxDevices, true),
@@ -54,6 +56,42 @@ func NewDeviceController(host string, maxDevices int) *DeviceController {
 		maxDevices: maxDevices,
 		backoff:    []time.Duration{1 * time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second},
 	}
+	if hostDevs := clusterConfig.GetPermittedHostDevices(); hostDevs != nil {
+		if len(hostDevs.PciHostDevices) != 0 {
+			supportedPCIDeviceMap := make(map[string]string)
+			for _, pciDev := range hostDevs.PciHostDevices {
+				if !pciDev.ExternalResourceProvider {
+					supportedPCIDeviceMap[pciDev.Selector] = pciDev.ResourceName
+				}
+			}
+			pciHostDevices := discoverPermittedHostPCIDevices(supportedPCIDeviceMap)
+			pciDevicePlugins := []GenericDevice{}
+			for pciID, pciDevices := range pciHostDevices {
+				pciResourceName := supportedPCIDeviceMap[pciID]
+				pciDevicePlugins = append(pciDevicePlugins, NewPCIDevicePlugin(pciDevices, resourceName))
+			}
+			controller.devicePlugins = append(controller.devicePlugins, pciDevicePlugins...)
+		}
+		if len(hostDevs.MediatedDevices) != 0 {
+			supportedMdevsMap := make(map[string]string)
+			for _, supportedMdev := range hostDevs.MediatedDevices {
+				if !supportedMdev.ExternalResourceProvider {
+					supportedMdevsMap[suppotedMdev.ModelSelector] = supportedMdev.ResourceNamespace
+				}
+			}
+
+			hostMdevs := discoverPermittedHostMediatedDevices(supportedMdevsMap)
+			mdevPlugins := []GenericDevice{}
+			for mdevTypeName, mdevUUIDs := range hostMdevs {
+				mdevResourceNamespace := supportedPCIDeviceMap[mdevTypeName]
+				mdevResourceName = fmt.Sprintf("%s/%s", mdevResourceNamespace, mdevTypeName)
+				mdevPlugins = append(mdevPlugins, NewMediatedDevicePlugin(mdevUUIDs, mdevResourceName))
+			}
+			controller.devicePlugins = append(controller.devicePlugins, mdevPlugins...)
+		}
+	}
+
+	return controller
 }
 
 func (c *DeviceController) nodeHasDevice(devicePath string) bool {

@@ -1300,6 +1300,7 @@ type KubeVirtConfiguration struct {
 	SELinuxLauncherType         string                  `json:"selinuxLauncherType,omitempty"`
 	SMBIOSConfig                *SMBiosConfiguration    `json:"smbiOS,omitempty"`
 	SupportedGuestAgentVersions []string                `json:"supportedGuestAgentVersions,omitempty"`
+	PermittedHostDevices        *PermittedHostDevices   `json:"permittedHostDevices,omitempty"`
 }
 
 type SMBiosConfiguration struct {
@@ -1331,6 +1332,31 @@ type DeveloperConfiguration struct {
 	MemoryOvercommit       int               `json:"memoryOvercommit,string,omitempty"`
 	NodeSelectors          map[string]string `json:"nodeSelectors,omitempty"`
 	UseEmulation           bool              `json:"useEmulation,string,omitempty"`
+}
+
+// PermittedHostDevices holds inforamtion about devices allowed for passthrough
+// +k8s:openapi-gen=true
+type PermittedHostDevices struct {
+	PciHostDevices  []PciHostDevice      `json:"pciDevices,omitempty"`
+	MediatedDevices []MediatedHostDevice `json:"mdevs,omitempty"`
+}
+
+// PciHostDevice represents a host PCI device allowed for passthrough
+// +k8s:openapi-gen=true
+type PciHostDevice struct {
+	Selector                 string `json:"pciSelector"`
+	ResourceName             string `json:"resourceName"`
+	Type                     string `json:"type,omitempty"`
+	ExternalResourceProvider bool   `json:"externalResourceProvider,omitempty"`
+}
+
+// MediatedHostDevice represents a host PCI device allowed for passthrough
+// +k8s:openapi-gen=true
+type MediatedHostDevice struct {
+	ModelSelector            string `json:"modelSelector"`
+	ResourceName             string `json:"resourceName"`
+	Type                     string `json:"type,omitempty"`
+	ExternalResourceProvider bool   `json:"externalResourceProvider,omitempty"`
 }
 
 // NetworkConfiguration holds network options

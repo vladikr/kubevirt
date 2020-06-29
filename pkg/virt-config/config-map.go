@@ -57,6 +57,8 @@ const (
 	SELinuxLauncherTypeKey            = "selinuxLauncherType"
 	SupportedGuestAgentVersionsKey    = "supported-guest-agent"
 	OVMFPathKey                       = "ovmfPath"
+	SupportedHostDevicesKey           = "supportedHostDevices"
+	HostDevConfigMapName              = "kubevirt-host-device-plugin-config"
 )
 
 type ConfigModifiedFn func()
@@ -387,6 +389,22 @@ func setConfigFromKubeVirt(config *v1.KubeVirtConfiguration, kv *v1.KubeVirt) er
 	return nil
 }
 
+// updateConfigFromHostDevConfigMap parses the provided config map and updates hostdevs in the config.
+// Default values in the provided config stay in tact.
+func updateConfigFromHostDevConfigMap(config *v1.KubeVirtConfiguration, configMap *k8sv1.ConfigMap) error {
+	// set migration options
+	rawConfig := strings.TrimSpace(configMap.Data[SupportedHostDevicesKey])
+	if rawConfig != "" {
+		// only sets values if they were specified, default values stay intact
+		err := yaml.NewYAMLOrJSONDecoder(strings.NewReader(rawConfig), 1024).Decode(config.SupportedHostDevices)
+		if err != nil {
+			return fmt.Errorf("failed to parse host devices config: %v", err)
+		}
+	}
+	return nil
+}
+
+
 // getConfig returns the latest valid parsed config map result, or updates it
 // if a newer version is available.
 // XXX Rework this, to happen mostly in informer callbacks.
@@ -438,6 +456,13 @@ func (c *ClusterConfig) GetConfig() (config *v1.KubeVirtConfiguration) {
 		c.lastInvalidConfigResourceVersion = resourceVersion
 		log.DefaultLogger().Reason(err).Errorf("Invalid cluster config using '%s' resource version '%s', falling back to last good resource version '%s'", resourceType, resourceVersion, c.lastValidConfigResourceVersion)
 		return c.lastValidConfig
+	}
+	if obj, exists, err := c.configMapInformer.GetStore().GetByKey(c.namespace + "/" + HostDevConfigMapName); err != nil {
+		log.DefaultLogger().Reason(err).Errorf("Error loading the cluster host device config from ConfigMap cache")
+	} else if exists {
+
+		hostDevConfigMap = obj.(*k8sv1.ConfigMap)
+		updateConfigFromHostDevConfigMap(config, hostDevConfigMap)
 	}
 
 	log.DefaultLogger().Infof("Updating cluster config to resource version '%s'", resourceVersion)

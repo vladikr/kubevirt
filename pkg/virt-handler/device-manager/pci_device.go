@@ -30,7 +30,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"golang.org/x/net/context"
@@ -42,7 +41,6 @@ import (
 )
 
 const (
-	connectionTimeout = 5 * time.Second
 	vfioDevicePath    = "/dev/vfio/"
 	vfioMount         = "/dev/vfio/vfio"
 	pciBasePath       = "/sys/bus/pci/devices"
@@ -61,33 +59,37 @@ type PCIDevicePlugin struct {
 	server     *grpc.Server
 	socketPath string
 	stop       chan struct{}
-	health     chan string
+	healthy    chan string
 	unhealthy  chan string
 	devicePath string
 	deviceName string
 	done       chan struct{}
 	deviceRoot string
+	iommuToPCIMap map[string]string
 }
 
 func NewPCIDevicePlugin(pciDevices []*PCIDevice, resourceName string) *PCIDevicePlugin {
 	deviceIDStr := strings.Replace(pciDevices[0].pciID, ":", "-", -1)
 	serverSock := SocketPath(deviceIDStr)
+	iommuToPCIMap := make(map[string]string)
 
-	devs := constructDPIdevices(pciDevices)
+	devs := constructDPIdevices(pciDevices, iommuToPCIMap)
 	dpi := &PCIDevicePlugin{
 		devs:       devs,
 		socketPath: serverSock,
-		health:     make(chan string),
+		healthy:    make(chan string),
+		unhealthy:  make(chan string),
 		deviceName: resourceName,
 		devicePath: vfioDevicePath,
 		deviceRoot: util.HostRootMount,
+		iommuToPCIMap: iommuToPCIMap,
 	}
 	return dpi
 }
 
-func constructDPIdevices(pciDevices []*PCIDevice) (devs []*pluginapi.Device) {
+func constructDPIdevices(pciDevices []*PCIDevice, iommuToPCIMap map[string]string) (devs []*pluginapi.Device) {
 	for _, pciDevice := range pciDevices {
-		//devicePath := fmt.Sprintf("%s/%s", vfioDevicePath, pciDevice.iommuGroup)
+		iommuToPCIMap[pciDevice.iommuGroup] = pciDevice.pciAddress
 		dpiDev := &pluginapi.Device{
 			ID:     string(pciDevice.iommuGroup),
 			Health: pluginapi.Healthy,
@@ -100,8 +102,9 @@ func constructDPIdevices(pciDevices []*PCIDevice) (devs []*pluginapi.Device) {
 				Nodes: []*pluginapi.NUMANode{numaInfo},
 			}
 		}
+		devs = append(devs, dpiDev)
 	}
-
+	return
 }
 
 func (dpi *PCIDevicePlugin) GetDevicePath() string {
@@ -228,7 +231,7 @@ func formatVFIODeviceSpecs(devID string) []*pluginapi.DeviceSpec {
 		Permissions:   "mrw",
 	})
 
-	vfioDevice := filepath.Join(devicePath, devID)
+	vfioDevice := filepath.Join(vfioDevicePath, devID)
 	devSpecs = append(devSpecs, &pluginapi.DeviceSpec{
 		HostPath:      vfioDevice,
 		ContainerPath: vfioDevice,
@@ -237,16 +240,9 @@ func formatVFIODeviceSpecs(devID string) []*pluginapi.DeviceSpec {
 	return devSpecs
 }
 
-func resourceNameToEnvvar(prefix string, resourceName string) string {
-	varName := strings.ToUpper(resourceName)
-	varName = strings.Replace(varName, "/", "_", -1)
-	varName = strings.Replace(varName, ".", "_", -1)
-	return fmt.Sprintf("%s_%s", prefix, varName)
-}
-
 func (dpi *PCIDevicePlugin) Allocate(ctx context.Context, r *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
 	resourceName := dpi.deviceName
-	resourceNameEnvVar = resourceNameToEnvvar("PCI", resourceName)
+	resourceNameEnvVar := util.ResourceNameToEnvvar("PCI_RESOURCE", resourceName)
 	allocatedDevices := []string{}
 	resp := new(pluginapi.AllocateResponse)
 	containerResponse := new(pluginapi.ContainerAllocateResponse)
@@ -254,12 +250,16 @@ func (dpi *PCIDevicePlugin) Allocate(ctx context.Context, r *pluginapi.AllocateR
 	for _, request := range r.ContainerRequests {
 		deviceSpecs := make([]*pluginapi.DeviceSpec, 0)
 		for _, devID := range request.DevicesIDs {
+			devPCIAddress, exist := dpi.iommuToPCIMap[devID]
+			if !exist {
+				continue
+			}
+			allocatedDevices = append(allocatedDevices, devPCIAddress)
 			deviceSpecs = append(deviceSpecs, formatVFIODeviceSpecs(devID)...)
-			allocatedDevice = append(allocatedDevices, filepath.Join(vfioDevicePath, devID))
 		}
 		containerResponse.Devices = deviceSpecs
 		envVar := make(map[string]string)
-		envVar[resourceNameEnvVar] = strings.Join(allocatedDevice, ",")
+		envVar[resourceNameEnvVar] = strings.Join(allocatedDevices, ",")
 
 		containerResponse.Envs = envVar
 		resp.ContainerResponses = append(resp.ContainerResponses, containerResponse)
@@ -311,7 +311,7 @@ func (dpi *PCIDevicePlugin) healthCheck() error {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("could not stat the device: %v", err)
 		}
-		dpi.health <- pluginapi.Unhealthy
+		//dpi.health <- pluginapi.Unhealthy
 	}
 
 	// probe all devices
@@ -347,10 +347,10 @@ func (dpi *PCIDevicePlugin) healthCheck() error {
 				// Health in this case is if the device path actually exists
 				if event.Op == fsnotify.Create {
 					logger.Infof("monitored device %s appeared", dpi.deviceName)
-					dpi.health <- monDevId
+					dpi.healthy <- monDevId
 				} else if (event.Op == fsnotify.Remove) || (event.Op == fsnotify.Rename) {
 					logger.Infof("monitored device %s disappeared", dpi.deviceName)
-					dpi.health <- monDevId
+					dpi.unhealthy <- monDevId
 				}
 			} else if event.Name == dpi.socketPath && event.Op == fsnotify.Remove {
 				logger.Infof("device socket file for device %s was removed, kubelet probably restarted.", dpi.deviceName)
@@ -364,12 +364,12 @@ func discoverPermittedHostPCIDevices(supportedPCIDeviceMap map[string]string) ma
 
 	pciDevicesMap := make(map[string][]*PCIDevice)
 	err := filepath.Walk(pciBasePath, func(path string, info os.FileInfo, err error) error {
-		if info.isdir() {
+		if info.IsDir() {
 			return nil
 		}
 		pciID, err := getDevicePCIID(pciBasePath, info.Name())
 		if err != nil {
-			log.DefaultLogger().Reason(err).Errorf("failed get vendor:device ID for device: %s", pciAddress)
+			log.DefaultLogger().Reason(err).Errorf("failed get vendor:device ID for device: %s", info.Name())
 			return nil
 		}
 		if _, supported := supportedPCIDeviceMap[pciID]; supported {
@@ -400,11 +400,11 @@ func discoverPermittedHostPCIDevices(supportedPCIDeviceMap map[string]string) ma
 	return pciDevicesMap
 }
 
-func getDeviceIOMMUGroup(basepath string, pciAddress string) (string, error) {
-	iommuLink := filepath.Join(basepath, info.Name(), "iommu_group")
+func getDeviceIOMMUGroup(basepath string, devID string) (string, error) {
+	iommuLink := filepath.Join(basepath, devID, "iommu_group")
 	iommuPath, err := os.Readlink(iommuLink)
 	if err != nil {
-		log.DefaultLogger().Reason(err).Errorf("failed to read iommu_group link %s for device %s", iommuLink, pciAddress)
+		log.DefaultLogger().Reason(err).Errorf("failed to read iommu_group link %s for device %s", iommuLink, devID)
 		return "", err
 	}
 	_, iommuGroup := filepath.Split(iommuPath)
@@ -448,7 +448,7 @@ func getDevicePCIID(basepath string, pciAddress string) (string, error) {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "pci_id") {
+		if strings.HasPrefix(line, "PCI_ID") {
 			equal := strings.Index(line, "=")
 			value := strings.TrimSpace(line[equal+1:])
 			return value, nil

@@ -31,6 +31,8 @@ source ${KUBEVIRTCI_CLUSTER_PATH}/$KUBEVIRT_PROVIDER/provider.sh
 source ${KUBEVIRTCI_PATH}/hack/config.sh
 
 if [ "$1" == "console" ] || [ "$1" == "vnc" ] || [ "$1" == "start" ] || [ "$1" == "stop" ] || [ "$1" == "migrate" ]; then
+    kubeconfig=$GOPATH/src/kubevirt.io/kubevirt/cluster/local/certs/admin.kubeconfig
+    echo ${KUBEVIRTCI_PATH}
     ${KUBEVIRTCI_PATH}/../_out/cmd/virtctl/virtctl --kubeconfig=${kubeconfig} "$@"
 else
     _kubectl "$@"

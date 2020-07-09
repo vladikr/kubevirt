@@ -27,18 +27,17 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 
 	"kubevirt.io/client-go/log"
+	"kubevirt.io/kubevirt/pkg/util"
 	pluginapi "kubevirt.io/kubevirt/pkg/virt-handler/device-manager/deviceplugin/v1beta1"
 )
 
 const (
-	connectionTimeout = 5 * time.Second
-	mdevBasePath      = "/sys/bus/mdev/devices"
+	mdevBasePath = "/sys/bus/mdev/devices"
 )
 
 type MDEV struct {
@@ -61,7 +60,8 @@ type MediatedDevicePlugin struct {
 }
 
 func NewMediatedDevicePlugin(mdevs []*MDEV, resourceName string) *MediatedDevicePlugin {
-	_, mdevTypeName := strings.Split(resourceName, "/")
+	s := strings.Split(resourceName, "/")
+	mdevTypeName := s[1]
 	serverSock := SocketPath(mdevTypeName)
 
 	devs := constructDPIdevicesFromMdev(mdevs)
@@ -79,7 +79,7 @@ func NewMediatedDevicePlugin(mdevs []*MDEV, resourceName string) *MediatedDevice
 func constructDPIdevicesFromMdev(mdevs []*MDEV) (devs []*pluginapi.Device) {
 	for _, mdev := range mdevs {
 		dpiDev := &pluginapi.Device{
-			ID:     string(mdev.typeName),
+			ID:     string(mdev.UUID),
 			Health: pluginapi.Healthy,
 		}
 		if mdev.numaNode > 0 {
@@ -90,7 +90,9 @@ func constructDPIdevicesFromMdev(mdevs []*MDEV) (devs []*pluginapi.Device) {
 				Nodes: []*pluginapi.NUMANode{numaInfo},
 			}
 		}
+		devs = append(devs, dpiDev)
 	}
+	return
 
 }
 
@@ -148,6 +150,21 @@ func (dpi *MediatedDevicePlugin) Start(stop chan struct{}) (err error) {
 	return err
 }
 
+// This will need to be extended
+func (dpi *MediatedDevicePlugin) healthCheck() error {
+	_, err := os.Stat(dpi.socketPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat the device-plugin socket: %v", err)
+	}
+
+	for {
+		select {
+		case <-dpi.stop:
+			return nil
+		}
+	}
+}
+
 // Stop stops the gRPC server
 func (dpi *MediatedDevicePlugin) Stop() error {
 	defer close(dpi.done)
@@ -198,18 +215,25 @@ func (dpi *MediatedDevicePlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.De
 
 func (dpi *MediatedDevicePlugin) Allocate(ctx context.Context, r *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
 	resourceName := dpi.deviceName
-	resourceNameEnvVar = resourceNameToEnvvar("MDEV", resourceName)
+	resourceNameEnvVar := util.ResourceNameToEnvvar("MDEV_PCI_RESOURCE", resourceName)
 	allocatedDevices := []string{}
 	resp := new(pluginapi.AllocateResponse)
 	containerResponse := new(pluginapi.ContainerAllocateResponse)
 
 	for _, request := range r.ContainerRequests {
+		deviceSpecs := make([]*pluginapi.DeviceSpec, 0)
 		for _, devID := range request.DevicesIDs {
-			allocatedDevice = append(allocatedDevices, devID)
+			iommuGroup, err := getDeviceIOMMUGroup(mdevBasePath, devID)
+			if err != nil {
+				continue
+			}
+			allocatedDevices = append(allocatedDevices, devID)
+			deviceSpecs = append(deviceSpecs, formatVFIODeviceSpecs(iommuGroup)...)
 		}
 		envVar := make(map[string]string)
-		envVar[resourceNameEnvVar] = strings.Join(allocatedDevice, ",")
+		envVar[resourceNameEnvVar] = strings.Join(allocatedDevices, ",")
 		containerResponse.Envs = envVar
+		containerResponse.Devices = deviceSpecs
 		resp.ContainerResponses = append(resp.ContainerResponses, containerResponse)
 	}
 	return resp, nil
@@ -238,7 +262,7 @@ func (dpi *MediatedDevicePlugin) PreStartContainer(ctx context.Context, in *plug
 func discoverPermittedHostMediatedDevices(supportedMdevsMap map[string]string) map[string][]*MDEV {
 
 	mdevsMap := make(map[string][]*MDEV)
-	err := filepath.walk(mdevBasePath, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(mdevBasePath, func(path string, info os.FileInfo, err error) error {
 		if info.IsDir() {
 			return nil
 		}
@@ -286,6 +310,8 @@ func getMdevTypeName(mdevUUID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	typeNameStr := strings.Split(strings.Trim(string(rawName[:]), "\n"), " ")[1]
+	// The name usually contain spaces which should be replaced with _
+	typeNameStr := strings.Replace(string(rawName), " ", "_", -1)
+	typeNameStr = strings.TrimSpace(typeNameStr)
 	return typeNameStr, nil
 }

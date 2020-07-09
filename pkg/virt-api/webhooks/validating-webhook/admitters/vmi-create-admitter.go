@@ -935,7 +935,6 @@ func ValidateVirtualMachineInstanceSpec(field *k8sfield.Path, spec *v1.VirtualMa
 			Field:   field.Child("GPUs").String(),
 		})
 	}
-
 	return causes
 }
 

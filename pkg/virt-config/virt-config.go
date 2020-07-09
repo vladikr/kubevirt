@@ -151,3 +151,4 @@ func (c *ClusterConfig) GetOVMFPath() string {
 
 func (c *ClusterConfig) GetPermittedHostDevices() *v1.PermittedHostDevices {
 	return c.GetConfig().PermittedHostDevices
+}

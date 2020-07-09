@@ -43,9 +43,12 @@ type DeviceController struct {
 	host          string
 	maxDevices    int
 	backoff       []time.Duration
+	virtConfig    *virtconfig.ClusterConfig
 }
 
 func NewDeviceController(host string, maxDevices int, clusterConfig *virtconfig.ClusterConfig) *DeviceController {
+	logger := log.DefaultLogger()
+	logger.Infof("Device Controller: config: %v", clusterConfig)
 	controller := &DeviceController{
 		devicePlugins: []GenericDevice{
 			NewGenericDevicePlugin(KVMName, KVMPath, maxDevices, false),
@@ -56,40 +59,8 @@ func NewDeviceController(host string, maxDevices int, clusterConfig *virtconfig.
 		maxDevices: maxDevices,
 		backoff:    []time.Duration{1 * time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second},
 	}
-	if hostDevs := clusterConfig.GetPermittedHostDevices(); hostDevs != nil {
-		if len(hostDevs.PciHostDevices) != 0 {
-			supportedPCIDeviceMap := make(map[string]string)
-			for _, pciDev := range hostDevs.PciHostDevices {
-				if !pciDev.ExternalResourceProvider {
-					supportedPCIDeviceMap[pciDev.Selector] = pciDev.ResourceName
-				}
-			}
-			pciHostDevices := discoverPermittedHostPCIDevices(supportedPCIDeviceMap)
-			pciDevicePlugins := []GenericDevice{}
-			for pciID, pciDevices := range pciHostDevices {
-				pciResourceName := supportedPCIDeviceMap[pciID]
-				pciDevicePlugins = append(pciDevicePlugins, NewPCIDevicePlugin(pciDevices, resourceName))
-			}
-			controller.devicePlugins = append(controller.devicePlugins, pciDevicePlugins...)
-		}
-		if len(hostDevs.MediatedDevices) != 0 {
-			supportedMdevsMap := make(map[string]string)
-			for _, supportedMdev := range hostDevs.MediatedDevices {
-				if !supportedMdev.ExternalResourceProvider {
-					supportedMdevsMap[suppotedMdev.ModelSelector] = supportedMdev.ResourceNamespace
-				}
-			}
-
-			hostMdevs := discoverPermittedHostMediatedDevices(supportedMdevsMap)
-			mdevPlugins := []GenericDevice{}
-			for mdevTypeName, mdevUUIDs := range hostMdevs {
-				mdevResourceNamespace := supportedPCIDeviceMap[mdevTypeName]
-				mdevResourceName = fmt.Sprintf("%s/%s", mdevResourceNamespace, mdevTypeName)
-				mdevPlugins = append(mdevPlugins, NewMediatedDevicePlugin(mdevUUIDs, mdevResourceName))
-			}
-			controller.devicePlugins = append(controller.devicePlugins, mdevPlugins...)
-		}
-	}
+	clusterConfig.GetPermittedHostDevices()
+	controller.virtConfig = clusterConfig
 
 	return controller
 }
@@ -125,10 +96,59 @@ func (c *DeviceController) startDevicePlugin(dev GenericDevice, stop chan struct
 	}
 }
 
+func (c *DeviceController) addPermittedHostDevicePlugins() {
+	logger := log.DefaultLogger()
+	if hostDevs := c.virtConfig.GetPermittedHostDevices(); hostDevs != nil {
+		logger.Infof("Device Controller: permitted devices: %v", hostDevs)
+		logger.Infof("Device Controller: permitted pci devices: %v", hostDevs.PciHostDevices)
+		logger.Infof("Device Controller: permitted pci devices: %v", hostDevs.MediatedDevices)
+		supportedPCIDeviceMap := make(map[string]string)
+		if len(hostDevs.PciHostDevices) != 0 {
+			for _, pciDev := range hostDevs.PciHostDevices {
+				logger.Infof("Device Controller: devices: %v, ExternalResourceProvider: %v", pciDev, pciDev.ExternalResourceProvider)
+				if !pciDev.ExternalResourceProvider {
+					supportedPCIDeviceMap[pciDev.Selector] = pciDev.ResourceName
+				}
+			}
+			logger.Infof("Device Controller: formed a supportedPCIDeviceMap : %v", supportedPCIDeviceMap)
+			pciHostDevices := discoverPermittedHostPCIDevices(supportedPCIDeviceMap)
+			logger.Infof("Device Controller: discovered pci devices: %v", pciHostDevices)
+			pciDevicePlugins := []GenericDevice{}
+			for pciID, pciDevices := range pciHostDevices {
+				pciResourceName := supportedPCIDeviceMap[pciID]
+				logger.Infof("Device Controller: getting pciID: %v, from supportedPCIDeviceMap, got :%v", pciID, pciResourceName)
+				pciDevicePlugins = append(pciDevicePlugins, NewPCIDevicePlugin(pciDevices, pciResourceName))
+			}
+			c.devicePlugins = append(c.devicePlugins, pciDevicePlugins...)
+		}
+		if len(hostDevs.MediatedDevices) != 0 {
+			supportedMdevsMap := make(map[string]string)
+			for _, supportedMdev := range hostDevs.MediatedDevices {
+				if !supportedMdev.ExternalResourceProvider {
+					supportedMdevsMap[supportedMdev.ModelSelector] = supportedMdev.ResourceNamespace
+				}
+			}
+
+			logger.Infof("Device Controller: formed a supportedMdevsMap : %v", supportedMdevsMap)
+			hostMdevs := discoverPermittedHostMediatedDevices(supportedMdevsMap)
+			logger.Infof("Device Controller: discovered mdevs: %v", hostMdevs)
+			mdevPlugins := []GenericDevice{}
+			for mdevTypeName, mdevUUIDs := range hostMdevs {
+				mdevResourceNamespace := supportedMdevsMap[mdevTypeName]
+				mdevResourceName := fmt.Sprintf("%s/%s", mdevResourceNamespace, mdevTypeName)
+				logger.Infof("Device Controller: getting mdevTypeName: %v, from supportedMdevsMap, got :%v", mdevTypeName, mdevResourceNamespace)
+				logger.Infof("Device Controller: create mdev dp for %v", mdevResourceName)
+				mdevPlugins = append(mdevPlugins, NewMediatedDevicePlugin(mdevUUIDs, mdevResourceName))
+			}
+			c.devicePlugins = append(c.devicePlugins, mdevPlugins...)
+		}
+	}
+}
+
 func (c *DeviceController) Run(stop chan struct{}) error {
 	logger := log.DefaultLogger()
 	logger.Info("Starting device plugin controller")
-
+	c.addPermittedHostDevicePlugins()
 	for _, dev := range c.devicePlugins {
 		go c.startDevicePlugin(dev, stop)
 	}

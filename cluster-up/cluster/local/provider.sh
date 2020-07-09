@@ -50,6 +50,11 @@ function _kubectl() {
     $GOPATH/src/k8s.io/kubernetes/cluster/kubectl.sh "$@"
 }
 
+function _virtctl() {
+    export KUBECONFIG=$(_cert_dir)/admin.kubeconfig
+    $GOPATH/src/k8s.io/kubernetes/cluster/kubectl.sh "$@"
+}
+
 function down() {
     echo "Not supported by this provider. Please kill the running script manually."
 }

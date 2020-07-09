@@ -38,6 +38,8 @@ import (
 	"kubevirt.io/client-go/precond"
 	cloudinit "kubevirt.io/kubevirt/pkg/cloud-init"
 	"kubevirt.io/kubevirt/pkg/config"
+
+	//kutil "kubevirt.io/kubevirt/pkg/util"
 	containerdisk "kubevirt.io/kubevirt/pkg/container-disk"
 	"kubevirt.io/kubevirt/pkg/emptydisk"
 	ephemeraldisk "kubevirt.io/kubevirt/pkg/ephemeral-disk"
@@ -72,9 +74,95 @@ type ConverterContext struct {
 	SMBios            *cmdv1.SMBios
 	GpuDevices        []string
 	VgpuDevices       []string
+	PCIDevices        map[string][]string
+	MediatedDevices   map[string][]string
 	EmulatorThreadCpu *int
 	OVMFPath          string
 }
+
+// pop one address from the addrList
+func popDeviceFromList(addrList []string) (string, []string) {
+	address := addrList[0]
+	if len(addrList) > 1 {
+		return address, addrList[1:]
+	}
+	return address, []string{}
+}
+
+// this function can be extended to include things like rombar, tag or anything else the API would provide for hotdev
+func formatDomainHostDevPCI(c *ConverterContext, resourceName string) (hostDevices []HostDevice) {
+	if addressesList, exist := c.PCIDevices[resourceName]; len(addressesList) != 0 && exist {
+		addr, entry := popDeviceFromList(c.PCIDevices[resourceName])
+		c.PCIDevices[resourceName] = entry
+		domainHostDevice, err := createHostDevicesFromPCIAddress(addr)
+		if err != nil {
+			log.Log.Reason(err).Error("Unable to parse PCI addresses")
+		} else {
+			hostDevices = append(hostDevices, domainHostDevice)
+		}
+	}
+	return
+}
+
+// this function can be extended to include things like rombar, tag or anything else the API would provide for hotdev
+func formatDomainMDEV(c *ConverterContext, resourceName string) (hostDevices []HostDevice) {
+	if addressesList, exist := c.MediatedDevices[resourceName]; len(addressesList) != 0 && exist {
+		addr, entry := popDeviceFromList(c.MediatedDevices[resourceName])
+		c.MediatedDevices[resourceName] = entry
+		domainHostDevice, err := createHostDevicesFromMdevUUID(addr)
+		if err != nil {
+			log.Log.Reason(err).Error("Unable to parse mdev addresses")
+		} else {
+			hostDevices = append(hostDevices, domainHostDevice)
+		}
+	}
+	return
+}
+
+func Convert_HostDevices_And_GPU(devices v1.Devices, domain *Domain, c *ConverterContext) {
+	var hostDevices []HostDevice
+	for _, hostDev := range devices.HostDevices {
+		domainHostDevList := formatDomainHostDevPCI(c, hostDev.DeviceName)
+		domainMDevList := formatDomainMDEV(c, hostDev.DeviceName)
+		hostDevices = append(hostDevices, domainHostDevList...)
+		hostDevices = append(hostDevices, domainMDevList...)
+	}
+
+	for _, gpu := range devices.GPUs {
+		domainHostDevList := formatDomainHostDevPCI(c, gpu.DeviceName)
+		domainMDevList := formatDomainMDEV(c, gpu.DeviceName)
+		hostDevices = append(hostDevices, domainHostDevList...)
+		hostDevices = append(hostDevices, domainMDevList...)
+	}
+
+	domain.Spec.Devices.HostDevices = append(domain.Spec.Devices.HostDevices, hostDevices...)
+	return
+
+}
+
+/*
+func Convert_v1_HostDevices_To_api_Hostdev(c *ConverterContext) {
+	varName := kutil.ResourceNameToEnvvar(devicePrefix, resourceName)
+	// This is needed to support a legacy approach to device assignment
+	// Append HostDevices to DomXML if GPU is requested
+	if util.IsGPUVMI(vmi) {
+		vgpuMdevUUID := append([]string{}, c.VgpuDevices...)
+		hostDevices, err := createHostDevicesFromMdevUUIDList(vgpuMdevUUID)
+		if err != nil {
+			log.Log.Reason(err).Error("Unable to parse Mdev UUID addresses")
+		} else {
+			domain.Spec.Devices.HostDevices = append(domain.Spec.Devices.HostDevices, hostDevices...)
+		}
+		gpuPCIAddresses := append([]string{}, c.GpuDevices...)
+		hostDevices, err = createHostDevicesFromPCIAddresses(gpuPCIAddresses)
+		if err != nil {
+			log.Log.Reason(err).Error("Unable to parse PCI addresses")
+		} else {
+			domain.Spec.Devices.HostDevices = append(domain.Spec.Devices.HostDevices, hostDevices...)
+		}
+	}
+
+}*/
 
 func Convert_v1_Disk_To_api_Disk(diskDevice *v1.Disk, disk *Disk, devicePerBus map[string]int, numQueues *uint) error {
 
@@ -1047,7 +1135,9 @@ func Convert_v1_VirtualMachine_To_api_Domain(vmi *v1.VirtualMachineInstance, dom
 			}
 		}
 	}
+	Convert_HostDevices_And_GPU(vmi.Spec.Domain.Devices, domain, c)
 
+	// This is needed to support a legacy approach to device assignment
 	// Append HostDevices to DomXML if GPU is requested
 	if util.IsGPUVMI(vmi) {
 		vgpuMdevUUID := append([]string{}, c.VgpuDevices...)
@@ -1580,6 +1670,40 @@ func decoratePciAddressField(addressField string) (*Address, error) {
 		Function: "0x" + dbsfFields[3],
 	}
 	return decoratedAddrField, nil
+}
+
+func createHostDevicesFromPCIAddress(pciAddr string) (HostDevice, error) {
+	address, err := decoratePciAddressField(pciAddr)
+	if err != nil {
+		return HostDevice{}, err
+	}
+
+	hostDev := HostDevice{
+		Source: HostDeviceSource{
+			Address: address,
+		},
+		Type:    "pci",
+		Managed: "yes",
+	}
+
+	return hostDev, nil
+}
+
+func createHostDevicesFromMdevUUID(mdevUUID string) (HostDevice, error) {
+	decoratedAddrField := &Address{
+		UUID: mdevUUID,
+	}
+
+	hostDev := HostDevice{
+		Source: HostDeviceSource{
+			Address: decoratedAddrField,
+		},
+		Type:  "mdev",
+		Mode:  "subsystem",
+		Model: "vfio-pci",
+	}
+
+	return hostDev, nil
 }
 
 func createHostDevicesFromPCIAddresses(pcis []string) ([]HostDevice, error) {

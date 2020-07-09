@@ -57,7 +57,7 @@ const (
 	SELinuxLauncherTypeKey            = "selinuxLauncherType"
 	SupportedGuestAgentVersionsKey    = "supported-guest-agent"
 	OVMFPathKey                       = "ovmfPath"
-	SupportedHostDevicesKey           = "supportedHostDevices"
+	PermittedHostDevicesKey           = "permittedHostDevices"
 	HostDevConfigMapName              = "kubevirt-host-device-plugin-config"
 )
 
@@ -71,6 +71,7 @@ type ConfigModifiedFn func()
 func NewClusterConfig(configMapInformer cache.SharedIndexInformer,
 	crdInformer cache.SharedIndexInformer,
 	kubeVirtInformer cache.SharedIndexInformer,
+	hostDevConfigMapInformer cache.SharedIndexInformer,
 	namespace string) *ClusterConfig {
 
 	defaultConfig := defaultClusterConfig()
@@ -83,9 +84,16 @@ func NewClusterConfig(configMapInformer cache.SharedIndexInformer,
 		namespace:         namespace,
 		lastValidConfig:   defaultConfig,
 		defaultConfig:     defaultConfig,
+		hostDevConfigMapInformer: hostDevConfigMapInformer,
 	}
 
 	c.configMapInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    c.configAddedDeleted,
+		DeleteFunc: c.configAddedDeleted,
+		UpdateFunc: c.configUpdated,
+	})
+
+	c.hostDevConfigMapInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    c.configAddedDeleted,
 		DeleteFunc: c.configAddedDeleted,
 		UpdateFunc: c.configUpdated,
@@ -203,6 +211,7 @@ func defaultClusterConfig() *v1.KubeVirtConfiguration {
 
 type ClusterConfig struct {
 	configMapInformer                cache.SharedIndexInformer
+	hostDevConfigMapInformer         cache.SharedIndexInformer
 	crdInformer                      cache.SharedIndexInformer
 	kubeVirtInformer                 cache.SharedIndexInformer
 	namespace                        string
@@ -393,17 +402,18 @@ func setConfigFromKubeVirt(config *v1.KubeVirtConfiguration, kv *v1.KubeVirt) er
 // Default values in the provided config stay in tact.
 func updateConfigFromHostDevConfigMap(config *v1.KubeVirtConfiguration, configMap *k8sv1.ConfigMap) error {
 	// set migration options
-	rawConfig := strings.TrimSpace(configMap.Data[SupportedHostDevicesKey])
+	rawConfig := strings.TrimSpace(configMap.Data[PermittedHostDevicesKey])
+	log.DefaultLogger().Infof("host devices config not empty : %v", rawConfig)
 	if rawConfig != "" {
 		// only sets values if they were specified, default values stay intact
-		err := yaml.NewYAMLOrJSONDecoder(strings.NewReader(rawConfig), 1024).Decode(config.SupportedHostDevices)
+		err := yaml.NewYAMLOrJSONDecoder(strings.NewReader(rawConfig), 1024).Decode(&config.PermittedHostDevices)
+		log.DefaultLogger().Infof("host devices config after parse : %v", config.PermittedHostDevices)
 		if err != nil {
 			return fmt.Errorf("failed to parse host devices config: %v", err)
 		}
 	}
 	return nil
 }
-
 
 // getConfig returns the latest valid parsed config map result, or updates it
 // if a newer version is available.
@@ -457,11 +467,22 @@ func (c *ClusterConfig) GetConfig() (config *v1.KubeVirtConfiguration) {
 		log.DefaultLogger().Reason(err).Errorf("Invalid cluster config using '%s' resource version '%s', falling back to last good resource version '%s'", resourceType, resourceVersion, c.lastValidConfigResourceVersion)
 		return c.lastValidConfig
 	}
-	if obj, exists, err := c.configMapInformer.GetStore().GetByKey(c.namespace + "/" + HostDevConfigMapName); err != nil {
+	log.DefaultLogger().Infof("host device config: %s", c.namespace + "/" + HostDevConfigMapName)
+	objlist := c.hostDevConfigMapInformer.GetStore().List()
+	log.DefaultLogger().Infof("config maps list: %v", objlist)
+	objlistkeys := c.hostDevConfigMapInformer.GetStore().ListKeys()
+	log.DefaultLogger().Infof("config maps keys list: %v", objlistkeys)
+	if syncErr := c.hostDevConfigMapInformer.GetStore().Resync(); syncErr == nil {
+		objlist1 := c.hostDevConfigMapInformer.GetStore().List()
+		log.DefaultLogger().Infof("config maps list1: %v", objlist1)
+		objlistkeys1 := c.hostDevConfigMapInformer.GetStore().ListKeys()
+		log.DefaultLogger().Infof("config maps keys list1: %v", objlistkeys1)
+	}
+	if obj, exists, err := c.hostDevConfigMapInformer.GetStore().GetByKey(c.namespace + "/" + HostDevConfigMapName); err != nil {
 		log.DefaultLogger().Reason(err).Errorf("Error loading the cluster host device config from ConfigMap cache")
 	} else if exists {
-
-		hostDevConfigMap = obj.(*k8sv1.ConfigMap)
+		hostDevConfigMap := obj.(*k8sv1.ConfigMap)
+		log.DefaultLogger().Infof("Got Hostdevice config: %v", hostDevConfigMap)
 		updateConfigFromHostDevConfigMap(config, hostDevConfigMap)
 	}
 

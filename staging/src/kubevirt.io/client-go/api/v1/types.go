@@ -1360,7 +1360,7 @@ type PciHostDevice struct {
 // +k8s:openapi-gen=true
 type MediatedHostDevice struct {
 	ModelSelector            string `json:"modelSelector"`
-	ResourceName             string `json:"resourceName"`
+	ResourceNamespace        string `json:"resourceNamespace"`
 	Type                     string `json:"type,omitempty"`
 	ExternalResourceProvider bool   `json:"externalResourceProvider,omitempty"`
 }

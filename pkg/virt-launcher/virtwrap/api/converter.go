@@ -90,79 +90,69 @@ func popDeviceFromList(addrList []string) (string, []string) {
 }
 
 // this function can be extended to include things like rombar, tag or anything else the API would provide for hotdev
-func formatDomainHostDevPCI(c *ConverterContext, resourceName string) (hostDevices []HostDevice) {
-	if addressesList, exist := c.PCIDevices[resourceName]; len(addressesList) != 0 && exist {
-		addr, entry := popDeviceFromList(c.PCIDevices[resourceName])
-		c.PCIDevices[resourceName] = entry
-		domainHostDevice, err := createHostDevicesFromPCIAddress(addr)
-		if err != nil {
-			log.Log.Reason(err).Error("Unable to parse PCI addresses")
-		} else {
-			hostDevices = append(hostDevices, domainHostDevice)
-		}
+func formatDomainHostDevPCI(c *ConverterContext, resourceName string, name string) (HostDevice, error) {
+	var domainHostDevice HostDevice
+	addr, entry := popDeviceFromList(c.PCIDevices[resourceName])
+	domainHostDevice, err := createHostDevicesFromPCIAddress(addr, name)
+	if err != nil {
+		log.Log.Reason(err).Errorf("Unable to parse PCI addresses: %s", addr)
+		return domainHostDevice, err
 	}
-	return
+	c.PCIDevices[resourceName] = entry
+	return domainHostDevice, nil
 }
 
 // this function can be extended to include things like rombar, tag or anything else the API would provide for hotdev
-func formatDomainMDEV(c *ConverterContext, resourceName string) (hostDevices []HostDevice) {
-	if addressesList, exist := c.MediatedDevices[resourceName]; len(addressesList) != 0 && exist {
-		addr, entry := popDeviceFromList(c.MediatedDevices[resourceName])
-		c.MediatedDevices[resourceName] = entry
-		domainHostDevice, err := createHostDevicesFromMdevUUID(addr)
-		if err != nil {
-			log.Log.Reason(err).Error("Unable to parse mdev addresses")
-		} else {
-			hostDevices = append(hostDevices, domainHostDevice)
-		}
+func formatDomainMDEV(c *ConverterContext, resourceName string, name string) (HostDevice, error) {
+	var domainHostDevice HostDevice
+	addr, entry := popDeviceFromList(c.MediatedDevices[resourceName])
+	domainHostDevice, err := createHostDevicesFromMdevUUID(addr, name)
+	if err != nil {
+		log.Log.Reason(err).Errorf("Unable to parse mdev address: %s", addr)
+		return domainHostDevice, err
 	}
-	return
+	c.MediatedDevices[resourceName] = entry
+	return domainHostDevice, nil
 }
 
-func Convert_HostDevices_And_GPU(devices v1.Devices, domain *Domain, c *ConverterContext) {
+func formatHostDevicesList(c *ConverterContext, resourceName string, name string) ([]HostDevice, error) {
 	var hostDevices []HostDevice
-	for _, hostDev := range devices.HostDevices {
-		domainHostDevList := formatDomainHostDevPCI(c, hostDev.DeviceName)
-		domainMDevList := formatDomainMDEV(c, hostDev.DeviceName)
-		hostDevices = append(hostDevices, domainHostDevList...)
-		hostDevices = append(hostDevices, domainMDevList...)
+	if addressesList, exist := c.PCIDevices[resourceName]; len(addressesList) != 0 && exist {
+		domainHostDev, err := formatDomainHostDevPCI(c, resourceName, name)
+		if err != nil {
+			return hostDevices, err
+		}
+		hostDevices = append(hostDevices, domainHostDev)
 	}
-
-	for _, gpu := range devices.GPUs {
-		domainHostDevList := formatDomainHostDevPCI(c, gpu.DeviceName)
-		domainMDevList := formatDomainMDEV(c, gpu.DeviceName)
-		hostDevices = append(hostDevices, domainHostDevList...)
-		hostDevices = append(hostDevices, domainMDevList...)
+	if addressesList, exist := c.MediatedDevices[resourceName]; len(addressesList) != 0 && exist {
+		domainMDev, err := formatDomainMDEV(c, resourceName, name)
+		if err != nil {
+			return hostDevices, err
+		}
+		hostDevices = append(hostDevices, domainMDev)
 	}
-
-	domain.Spec.Devices.HostDevices = append(domain.Spec.Devices.HostDevices, hostDevices...)
-	return
-
+	return hostDevices, nil
 }
 
-/*
-func Convert_v1_HostDevices_To_api_Hostdev(c *ConverterContext) {
-	varName := kutil.ResourceNameToEnvvar(devicePrefix, resourceName)
-	// This is needed to support a legacy approach to device assignment
-	// Append HostDevices to DomXML if GPU is requested
-	if util.IsGPUVMI(vmi) {
-		vgpuMdevUUID := append([]string{}, c.VgpuDevices...)
-		hostDevices, err := createHostDevicesFromMdevUUIDList(vgpuMdevUUID)
+func Convert_HostDevices_And_GPU(devices v1.Devices, domain *Domain, c *ConverterContext) error {
+	for _, hostDev := range devices.HostDevices {
+		hostDevices, err := formatHostDevicesList(c, hostDev.DeviceName, hostDev.Name)
 		if err != nil {
-			log.Log.Reason(err).Error("Unable to parse Mdev UUID addresses")
-		} else {
-			domain.Spec.Devices.HostDevices = append(domain.Spec.Devices.HostDevices, hostDevices...)
+			return err
 		}
-		gpuPCIAddresses := append([]string{}, c.GpuDevices...)
-		hostDevices, err = createHostDevicesFromPCIAddresses(gpuPCIAddresses)
+		domain.Spec.Devices.HostDevices = append(domain.Spec.Devices.HostDevices, hostDevices...)
+	}
+	for _, gpu := range devices.GPUs {
+		hostDevices, err := formatHostDevicesList(c, gpu.DeviceName, gpu.Name)
 		if err != nil {
-			log.Log.Reason(err).Error("Unable to parse PCI addresses")
-		} else {
-			domain.Spec.Devices.HostDevices = append(domain.Spec.Devices.HostDevices, hostDevices...)
+			return err
 		}
+		domain.Spec.Devices.HostDevices = append(domain.Spec.Devices.HostDevices, hostDevices...)
 	}
 
-}*/
+	return nil
+
+}
 
 func Convert_v1_Disk_To_api_Disk(diskDevice *v1.Disk, disk *Disk, devicePerBus map[string]int, numQueues *uint) error {
 
@@ -1136,6 +1126,8 @@ func Convert_v1_VirtualMachine_To_api_Domain(vmi *v1.VirtualMachineInstance, dom
 		}
 	}
 	Convert_HostDevices_And_GPU(vmi.Spec.Domain.Devices, domain, c)
+	log.Log.Infof("formatting hostdevs. domain devices: %v", domain.Spec.Devices)
+	log.Log.Infof("formatting hostdevs. domain host devices: %v", domain.Spec.Devices.HostDevices)
 
 	// This is needed to support a legacy approach to device assignment
 	// Append HostDevices to DomXML if GPU is requested
@@ -1672,7 +1664,7 @@ func decoratePciAddressField(addressField string) (*Address, error) {
 	return decoratedAddrField, nil
 }
 
-func createHostDevicesFromPCIAddress(pciAddr string) (HostDevice, error) {
+func createHostDevicesFromPCIAddress(pciAddr string, name string) (HostDevice, error) {
 	address, err := decoratePciAddressField(pciAddr)
 	if err != nil {
 		return HostDevice{}, err
@@ -1685,11 +1677,12 @@ func createHostDevicesFromPCIAddress(pciAddr string) (HostDevice, error) {
 		Type:    "pci",
 		Managed: "yes",
 	}
+	hostDev.Alias = &Alias{Name: name}
 
 	return hostDev, nil
 }
 
-func createHostDevicesFromMdevUUID(mdevUUID string) (HostDevice, error) {
+func createHostDevicesFromMdevUUID(mdevUUID string, name string) (HostDevice, error) {
 	decoratedAddrField := &Address{
 		UUID: mdevUUID,
 	}
@@ -1702,6 +1695,7 @@ func createHostDevicesFromMdevUUID(mdevUUID string) (HostDevice, error) {
 		Mode:  "subsystem",
 		Model: "vfio-pci",
 	}
+	hostDev.Alias = &Alias{Name: name}
 
 	return hostDev, nil
 }

@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * Copyright 2018 Red Hat, Inc.
+ * Copyright 2020 Red Hat, Inc.
  *
  */
 
@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/fsnotify/fsnotify"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 
@@ -38,12 +39,14 @@ import (
 
 const (
 	mdevBasePath = "/sys/bus/mdev/devices"
+	MDEV_RESOURCE_PREFIX = "MDEV_PCI_RESOURCE"
 )
 
 type MDEV struct {
 	UUID             string
 	typeName         string
 	parentPciAddress string
+	iommuGroup       string
 	numaNode         int
 }
 
@@ -53,33 +56,44 @@ type MediatedDevicePlugin struct {
 	socketPath string
 	stop       chan struct{}
 	health     chan string
-	unhealthy  chan string
 	devicePath string
 	deviceName string
+	resourceName string
 	done       chan struct{}
+	deviceRoot string
+	healthy    chan string
+	unhealthy  chan string
+	iommuToMDEVMap map[string]string
 }
 
 func NewMediatedDevicePlugin(mdevs []*MDEV, resourceName string) *MediatedDevicePlugin {
 	s := strings.Split(resourceName, "/")
 	mdevTypeName := s[1]
 	serverSock := SocketPath(mdevTypeName)
+	iommuToMDEVMap := make(map[string]string)
 
-	devs := constructDPIdevicesFromMdev(mdevs)
+	devs := constructDPIdevicesFromMdev(mdevs, iommuToMDEVMap)
 	dpi := &MediatedDevicePlugin{
 		devs:       devs,
 		socketPath: serverSock,
 		health:     make(chan string),
 		deviceName: resourceName,
-		devicePath: mdevBasePath,
+		resourceName: resourceName,
+		devicePath: vfioDevicePath,
+		deviceRoot: util.HostRootMount,
+		healthy:    make(chan string),
+		unhealthy:  make(chan string),
+		iommuToMDEVMap: iommuToMDEVMap,
 	}
 
 	return dpi
 }
 
-func constructDPIdevicesFromMdev(mdevs []*MDEV) (devs []*pluginapi.Device) {
+func constructDPIdevicesFromMdev(mdevs []*MDEV, iommuToMDEVMap map[string]string) (devs []*pluginapi.Device) {
 	for _, mdev := range mdevs {
+		iommuToMDEVMap[mdev.iommuGroup] = mdev.UUID
 		dpiDev := &pluginapi.Device{
-			ID:     string(mdev.UUID),
+			ID:     string(mdev.iommuGroup),
 			Health: pluginapi.Healthy,
 		}
 		if mdev.numaNode > 0 {
@@ -93,15 +107,6 @@ func constructDPIdevicesFromMdev(mdevs []*MDEV) (devs []*pluginapi.Device) {
 		devs = append(devs, dpiDev)
 	}
 	return
-
-}
-
-func (dpi *MediatedDevicePlugin) GetDevicePath() string {
-	return dpi.devicePath
-}
-
-func (dpi *MediatedDevicePlugin) GetDeviceName() string {
-	return dpi.deviceName
 }
 
 // Start starts the device plugin
@@ -150,19 +155,51 @@ func (dpi *MediatedDevicePlugin) Start(stop chan struct{}) (err error) {
 	return err
 }
 
-// This will need to be extended
-func (dpi *MediatedDevicePlugin) healthCheck() error {
-	_, err := os.Stat(dpi.socketPath)
-	if err != nil {
-		return fmt.Errorf("failed to stat the device-plugin socket: %v", err)
-	}
+func (dpi *MediatedDevicePlugin) GetDevicePath() string {
+	return dpi.devicePath
+}
 
-	for {
-		select {
-		case <-dpi.stop:
-			return nil
+func (dpi *MediatedDevicePlugin) GetDeviceName() string {
+	return dpi.deviceName
+}
+
+
+func (dpi *MediatedDevicePlugin) Allocate(ctx context.Context, r *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
+	resourceName := dpi.deviceName
+	log.DefaultLogger().Infof("Allocate: resourceName: %s", dpi.deviceName)
+	log.DefaultLogger().Infof("Allocate: iommuMap: %v", dpi.iommuToMDEVMap)
+	resourceNameEnvVar := util.ResourceNameToEnvvar(MDEV_RESOURCE_PREFIX, resourceName)
+	log.DefaultLogger().Infof("Allocate: resourceNameEnvVar: %s", resourceNameEnvVar)
+	allocatedDevices := []string{}
+	resp := new(pluginapi.AllocateResponse)
+	containerResponse := new(pluginapi.ContainerAllocateResponse)
+
+	for _, request := range r.ContainerRequests {
+		log.DefaultLogger().Infof("Allocate: request: %v", request)
+		deviceSpecs := make([]*pluginapi.DeviceSpec, 0)
+		for _, devID := range request.DevicesIDs {
+			log.DefaultLogger().Infof("Allocate: devID: %s", devID)
+			if mdevUUID, exist := dpi.iommuToMDEVMap[devID]; exist {
+				log.DefaultLogger().Infof("Allocate: got devID: %s for uuid: %s", devID, mdevUUID)
+				allocatedDevices = append(allocatedDevices, mdevUUID)
+				formattedVFIO := formatVFIODeviceSpecs(devID)
+				log.DefaultLogger().Infof("Allocate: formatted vfio: %v", formattedVFIO)
+				deviceSpecs = append(deviceSpecs, formatVFIODeviceSpecs(devID)...)
+			}
+		}
+		envVar := make(map[string]string)
+		envVar[resourceNameEnvVar] = strings.Join(allocatedDevices, ",")
+		log.DefaultLogger().Infof("Allocate: allocatedDevices: %v", allocatedDevices)
+		containerResponse.Envs = envVar
+		containerResponse.Devices = deviceSpecs
+		log.DefaultLogger().Infof("Allocate: Envs: %v", envVar)
+		log.DefaultLogger().Infof("Allocate: Devices: %v", deviceSpecs)
+		resp.ContainerResponses = append(resp.ContainerResponses, containerResponse)
+		if len(deviceSpecs) == 0 {
+			return resp, fmt.Errorf("failed to allocate resource for resourceName: %s", resourceName)
 		}
 	}
+	return resp, nil
 }
 
 // Stop stops the gRPC server
@@ -184,7 +221,7 @@ func (dpi *MediatedDevicePlugin) Register() error {
 	reqt := &pluginapi.RegisterRequest{
 		Version:      pluginapi.Version,
 		Endpoint:     path.Base(dpi.socketPath),
-		ResourceName: dpi.deviceName,
+		ResourceName: dpi.resourceName,
 	}
 
 	_, err = client.Register(context.Background(), reqt)
@@ -205,38 +242,26 @@ func (dpi *MediatedDevicePlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.De
 
 	for {
 		select {
+		case unhealthy := <-dpi.unhealthy:
+			for _, dev := range dpi.devs {
+				if unhealthy == dev.ID {
+					dev.Health = pluginapi.Unhealthy
+				}
+			}
+			s.Send(&pluginapi.ListAndWatchResponse{Devices: dpi.devs})
+		case healthy := <-dpi.healthy:
+			for _, dev := range dpi.devs {
+				if healthy == dev.ID {
+					dev.Health = pluginapi.Healthy
+				}
+			}
+			s.Send(&pluginapi.ListAndWatchResponse{Devices: dpi.devs})
 		case <-dpi.stop:
 			return nil
 		case <-dpi.done:
 			return nil
 		}
 	}
-}
-
-func (dpi *MediatedDevicePlugin) Allocate(ctx context.Context, r *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
-	resourceName := dpi.deviceName
-	resourceNameEnvVar := util.ResourceNameToEnvvar("MDEV_PCI_RESOURCE", resourceName)
-	allocatedDevices := []string{}
-	resp := new(pluginapi.AllocateResponse)
-	containerResponse := new(pluginapi.ContainerAllocateResponse)
-
-	for _, request := range r.ContainerRequests {
-		deviceSpecs := make([]*pluginapi.DeviceSpec, 0)
-		for _, devID := range request.DevicesIDs {
-			iommuGroup, err := getDeviceIOMMUGroup(mdevBasePath, devID)
-			if err != nil {
-				continue
-			}
-			allocatedDevices = append(allocatedDevices, devID)
-			deviceSpecs = append(deviceSpecs, formatVFIODeviceSpecs(iommuGroup)...)
-		}
-		envVar := make(map[string]string)
-		envVar[resourceNameEnvVar] = strings.Join(allocatedDevices, ",")
-		containerResponse.Envs = envVar
-		containerResponse.Devices = deviceSpecs
-		resp.ContainerResponses = append(resp.ContainerResponses, containerResponse)
-	}
-	return resp, nil
 }
 
 func (dpi *MediatedDevicePlugin) cleanup() error {
@@ -285,6 +310,12 @@ func discoverPermittedHostMediatedDevices(supportedMdevsMap map[string]string) m
 			}
 
 			mdev.numaNode = getDeviceNumaNode(pciBasePath, parentPCIAddr)
+			iommuGroup, err := getDeviceIOMMUGroup(mdevBasePath, info.Name())
+			if err != nil {
+				log.DefaultLogger().Reason(err).Errorf("failed to get iommu group of mdev: %s", info.Name())
+				return nil
+			}
+			mdev.iommuGroup = iommuGroup
 			mdevsMap[mdevTypeName] = append(mdevsMap[mdevTypeName], mdev)
 		}
 		return nil
@@ -293,6 +324,78 @@ func discoverPermittedHostMediatedDevices(supportedMdevsMap map[string]string) m
 		log.DefaultLogger().Reason(err).Errorf("failed to discover mediated devices")
 	}
 	return mdevsMap
+}
+
+func (dpi *MediatedDevicePlugin) healthCheck() error {
+	logger := log.DefaultLogger()
+	monitoredDevices := make(map[string]string)
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("failed to creating a fsnotify watcher: %v", err)
+	}
+	defer watcher.Close()
+
+	// This way we don't have to mount /dev from the node
+	devicePath := filepath.Join(dpi.deviceRoot, dpi.devicePath)
+
+	// Start watching the files before we check for their existence to avoid races
+	dirName := filepath.Dir(devicePath)
+	err = watcher.Add(dirName)
+	if err != nil {
+		return fmt.Errorf("failed to add the device root path to the watcher: %v", err)
+	}
+
+	_, err = os.Stat(devicePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("could not stat the device: %v", err)
+		}
+	}
+
+	// probe all devices
+	for _, dev := range dpi.devs {
+		vfioDevice := filepath.Join(devicePath, dev.ID)
+		err = watcher.Add(vfioDevice)
+		if err != nil {
+			return fmt.Errorf("failed to add the device %s to the watcher: %v", vfioDevice, err)
+		}
+		monitoredDevices[vfioDevice] = dev.ID
+	}
+
+	dirName = filepath.Dir(dpi.socketPath)
+	err = watcher.Add(dirName)
+
+	if err != nil {
+		return fmt.Errorf("failed to add the device-plugin kubelet path to the watcher: %v", err)
+	}
+	_, err = os.Stat(dpi.socketPath)
+	if err != nil {
+		return fmt.Errorf("failed to stat the device-plugin socket: %v", err)
+	}
+
+	for {
+		select {
+		case <-dpi.stop:
+			return nil
+		case err := <-watcher.Errors:
+			logger.Reason(err).Errorf("error watching devices and device plugin directory")
+		case event := <-watcher.Events:
+			logger.V(4).Infof("health Event: %v", event)
+			if monDevId, exist := monitoredDevices[event.Name]; exist {
+				// Health in this case is if the device path actually exists
+				if event.Op == fsnotify.Create {
+					logger.Infof("monitored device %s appeared", dpi.deviceName)
+					dpi.healthy <- monDevId
+				} else if (event.Op == fsnotify.Remove) || (event.Op == fsnotify.Rename) {
+					logger.Infof("monitored device %s disappeared", dpi.deviceName)
+					dpi.unhealthy <- monDevId
+				}
+			} else if event.Name == dpi.socketPath && event.Op == fsnotify.Remove {
+				logger.Infof("device socket file for device %s was removed, kubelet probably restarted.", dpi.deviceName)
+				return nil
+			}
+		}
+	}
 }
 
 // /sys/class/mdev_bus/0000:00:03.0/53764d0e-85a0-42b4-af5c-2046b460b1dc

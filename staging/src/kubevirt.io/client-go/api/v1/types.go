@@ -1350,18 +1350,16 @@ type PermittedHostDevices struct {
 // PciHostDevice represents a host PCI device allowed for passthrough
 // +k8s:openapi-gen=true
 type PciHostDevice struct {
-	Selector                 string `json:"pciSelector"`
+	Selector                 string `json:"pciVendorSelector"`
 	ResourceName             string `json:"resourceName"`
-	Type                     string `json:"type,omitempty"`
 	ExternalResourceProvider bool   `json:"externalResourceProvider,omitempty"`
 }
 
-// MediatedHostDevice represents a host PCI device allowed for passthrough
+// MediatedHostDevice represents a host mediated device allowed for passthrough
 // +k8s:openapi-gen=true
 type MediatedHostDevice struct {
-	ModelSelector            string `json:"modelSelector"`
-	ResourceNamespace        string `json:"resourceNamespace"`
-	Type                     string `json:"type,omitempty"`
+	Selector                 string `json:"mdevNameSelector"`
+	ResourceName             string `json:"resourceName"`
 	ExternalResourceProvider bool   `json:"externalResourceProvider,omitempty"`
 }
 

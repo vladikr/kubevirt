@@ -44,6 +44,7 @@ const (
 	vfioDevicePath    = "/dev/vfio/"
 	vfioMount         = "/dev/vfio/vfio"
 	pciBasePath       = "/sys/bus/pci/devices"
+	PCI_RESOURCE_PREFIX = "PCI_RESOURCE"
 )
 
 type PCIDevice struct {
@@ -59,12 +60,14 @@ type PCIDevicePlugin struct {
 	server     *grpc.Server
 	socketPath string
 	stop       chan struct{}
-	healthy    chan string
-	unhealthy  chan string
+	health     chan string
 	devicePath string
 	deviceName string
+	resourceName string
 	done       chan struct{}
 	deviceRoot string
+	healthy    chan string
+	unhealthy  chan string
 	iommuToPCIMap map[string]string
 }
 
@@ -77,12 +80,13 @@ func NewPCIDevicePlugin(pciDevices []*PCIDevice, resourceName string) *PCIDevice
 	dpi := &PCIDevicePlugin{
 		devs:       devs,
 		socketPath: serverSock,
-		healthy:    make(chan string),
-		unhealthy:  make(chan string),
 		deviceName: resourceName,
+		resourceName: resourceName,
 		devicePath: vfioDevicePath,
 		deviceRoot: util.HostRootMount,
 		iommuToPCIMap: iommuToPCIMap,
+		healthy:    make(chan string),
+		unhealthy:  make(chan string),
 	}
 	return dpi
 }
@@ -105,14 +109,6 @@ func constructDPIdevices(pciDevices []*PCIDevice, iommuToPCIMap map[string]strin
 		devs = append(devs, dpiDev)
 	}
 	return
-}
-
-func (dpi *PCIDevicePlugin) GetDevicePath() string {
-	return dpi.devicePath
-}
-
-func (dpi *PCIDevicePlugin) GetDeviceName() string {
-	return dpi.deviceName
 }
 
 // Start starts the device plugin
@@ -159,35 +155,6 @@ func (dpi *PCIDevicePlugin) Start(stop chan struct{}) (err error) {
 	err = <-errChan
 
 	return err
-}
-
-// Stop stops the gRPC server
-func (dpi *PCIDevicePlugin) Stop() error {
-	defer close(dpi.done)
-	dpi.server.Stop()
-	return dpi.cleanup()
-}
-
-// Register registers the device plugin for the given resourceName with Kubelet.
-func (dpi *PCIDevicePlugin) Register() error {
-	conn, err := connect(pluginapi.KubeletSocket, connectionTimeout)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-
-	client := pluginapi.NewRegistrationClient(conn)
-	reqt := &pluginapi.RegisterRequest{
-		Version:      pluginapi.Version,
-		Endpoint:     path.Base(dpi.socketPath),
-		ResourceName: dpi.deviceName,
-	}
-
-	_, err = client.Register(context.Background(), reqt)
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 func (dpi *PCIDevicePlugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugin_ListAndWatchServer) error {
@@ -242,7 +209,7 @@ func formatVFIODeviceSpecs(devID string) []*pluginapi.DeviceSpec {
 
 func (dpi *PCIDevicePlugin) Allocate(ctx context.Context, r *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
 	resourceName := dpi.deviceName
-	resourceNameEnvVar := util.ResourceNameToEnvvar("PCI_RESOURCE", resourceName)
+	resourceNameEnvVar := util.ResourceNameToEnvvar(PCI_RESOURCE_PREFIX, resourceName)
 	allocatedDevices := []string{}
 	resp := new(pluginapi.AllocateResponse)
 	containerResponse := new(pluginapi.ContainerAllocateResponse)
@@ -265,26 +232,6 @@ func (dpi *PCIDevicePlugin) Allocate(ctx context.Context, r *pluginapi.AllocateR
 		resp.ContainerResponses = append(resp.ContainerResponses, containerResponse)
 	}
 	return resp, nil
-}
-
-func (dpi *PCIDevicePlugin) cleanup() error {
-	if err := os.Remove(dpi.socketPath); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-
-	return nil
-}
-
-func (dpi *PCIDevicePlugin) GetDevicePluginOptions(ctx context.Context, e *pluginapi.Empty) (*pluginapi.DevicePluginOptions, error) {
-	options := &pluginapi.DevicePluginOptions{
-		PreStartRequired: false,
-	}
-	return options, nil
-}
-
-func (dpi *PCIDevicePlugin) PreStartContainer(ctx context.Context, in *pluginapi.PreStartContainerRequest) (*pluginapi.PreStartContainerResponse, error) {
-	res := &pluginapi.PreStartContainerResponse{}
-	return res, nil
 }
 
 func (dpi *PCIDevicePlugin) healthCheck() error {
@@ -311,7 +258,6 @@ func (dpi *PCIDevicePlugin) healthCheck() error {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("could not stat the device: %v", err)
 		}
-		//dpi.health <- pluginapi.Unhealthy
 	}
 
 	// probe all devices
@@ -358,6 +304,63 @@ func (dpi *PCIDevicePlugin) healthCheck() error {
 			}
 		}
 	}
+}
+
+func (dpi *PCIDevicePlugin) GetDevicePath() string {
+	return dpi.devicePath
+}
+
+func (dpi *PCIDevicePlugin) GetDeviceName() string {
+	return dpi.deviceName
+}
+
+// Stop stops the gRPC server
+func (dpi *PCIDevicePlugin) Stop() error {
+	defer close(dpi.done)
+	dpi.server.Stop()
+	return dpi.cleanup()
+}
+
+// Register registers the device plugin for the given resourceName with Kubelet.
+func (dpi *PCIDevicePlugin) Register() error {
+	conn, err := connect(pluginapi.KubeletSocket, connectionTimeout)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	client := pluginapi.NewRegistrationClient(conn)
+	reqt := &pluginapi.RegisterRequest{
+		Version:      pluginapi.Version,
+		Endpoint:     path.Base(dpi.socketPath),
+		ResourceName: dpi.resourceName,
+	}
+
+	_, err = client.Register(context.Background(), reqt)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (dpi *PCIDevicePlugin) cleanup() error {
+	if err := os.Remove(dpi.socketPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	return nil
+}
+
+func (dpi *PCIDevicePlugin) GetDevicePluginOptions(ctx context.Context, e *pluginapi.Empty) (*pluginapi.DevicePluginOptions, error) {
+	options := &pluginapi.DevicePluginOptions{
+		PreStartRequired: false,
+	}
+	return options, nil
+}
+
+func (dpi *PCIDevicePlugin) PreStartContainer(ctx context.Context, in *pluginapi.PreStartContainerRequest) (*pluginapi.PreStartContainerResponse, error) {
+	res := &pluginapi.PreStartContainerResponse{}
+	return res, nil
 }
 
 func discoverPermittedHostPCIDevices(supportedPCIDeviceMap map[string]string) map[string][]*PCIDevice {

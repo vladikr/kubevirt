@@ -220,6 +220,8 @@ type ClusterConfig struct {
 	defaultConfig                    *v1.KubeVirtConfiguration
 	lastInvalidConfigResourceVersion string
 	lastValidConfigResourceVersion   string
+	lastInvalidHostDevConfigResourceVersion string
+	lastValidHostDevConfigResourceVersion   string
 	configModifiedCallback           ConfigModifiedFn
 }
 
@@ -424,8 +426,10 @@ func (c *ClusterConfig) GetConfig() (config *v1.KubeVirtConfiguration) {
 	defer c.lock.Unlock()
 
 	var configMap *k8sv1.ConfigMap
+	var hostDevConfigMap *k8sv1.ConfigMap
 	var kv *v1.KubeVirt
 	var resourceVersion string
+	var hostDevResourceVersion string
 	var resourceType string
 	useConfigMap := false
 
@@ -447,48 +451,53 @@ func (c *ClusterConfig) GetConfig() (config *v1.KubeVirtConfiguration) {
 		resourceVersion = configMap.ResourceVersion
 	}
 
-	// if there is a configuration config map present we should use its configuration
-	// and ignore configuration in kubevirt
-	if c.lastValidConfigResourceVersion == resourceVersion ||
-		c.lastInvalidConfigResourceVersion == resourceVersion {
+	// get host devices configMap
+	if obj, exists, err := c.hostDevConfigMapInformer.GetStore().GetByKey(c.namespace + "/" + HostDevConfigMapName); err != nil {
+		log.DefaultLogger().Reason(err).Errorf("Error loading the cluster host devices config from ConfigMap cache, falling back to last good resource version '%s'", c.lastValidHostDevConfigResourceVersion)
 		return c.lastValidConfig
+	} else if exists {
+		hostDevConfigMap = obj.(*k8sv1.ConfigMap)
+		hostDevResourceVersion = hostDevConfigMap.ResourceVersion
 	}
+
+	/*/ if there is a configuration config map present we should use its configuration
+	// and ignore configuration in kubevirt
+	if c.lastValidConfigResourceVersion == resourceVersion {
+		if c.lastValidHostDevConfigResourceVersion == hostDevResourceVersion)||
+		c.lastInvalidConfigResourceVersion == resourceVersion || c.lastInvalidHostDevConfigResourceVersion == hostDevResourceVersion{
+		return c.lastValidConfig
+	}*/
 
 	config = defaultClusterConfig()
 	var err error
-	if useConfigMap {
-		err = setConfigFromConfigMap(config, configMap)
-	} else {
-		err = setConfigFromKubeVirt(config, kv)
+	if c.lastValidConfigResourceVersion != resourceVersion && c.lastInvalidConfigResourceVersion != resourceVersion {
+		if useConfigMap {
+			err = setConfigFromConfigMap(config, configMap)
+		} else {
+			err = setConfigFromKubeVirt(config, kv)
+		}
+		if err != nil {
+			c.lastInvalidConfigResourceVersion = resourceVersion
+			log.DefaultLogger().Reason(err).Errorf("Invalid cluster config using '%s' resource version '%s', falling back to last good resource version '%s'", resourceType, resourceVersion, c.lastValidConfigResourceVersion)
+		} else {
+			log.DefaultLogger().Infof("Updating cluster config to resource version '%s'", resourceVersion)
+			c.lastValidConfigResourceVersion = resourceVersion
+			c.lastValidConfig = config
+		}
+	}
+	if hostDevConfigMap != nil && c.lastValidHostDevConfigResourceVersion != hostDevResourceVersion && c.lastInvalidHostDevConfigResourceVersion != hostDevResourceVersion{
+		workingConf := c.lastValidConfig
+		hostDevErr := updateConfigFromHostDevConfigMap(workingConf, hostDevConfigMap)
+		if hostDevErr != nil {
+			c.lastInvalidHostDevConfigResourceVersion = hostDevResourceVersion
+			log.DefaultLogger().Reason(hostDevErr).Errorf("Invalid cluster host devices config using resource version '%s', falling back to last good host devices resource version '%s'", hostDevResourceVersion, c.lastValidHostDevConfigResourceVersion)
+		} else {
+			log.DefaultLogger().Infof("Updating cluster host devices config to resource version '%s'", hostDevResourceVersion)
+			c.lastValidHostDevConfigResourceVersion = hostDevResourceVersion
+			c.lastValidConfig = workingConf
+		}
 	}
 
-	if err != nil {
-		c.lastInvalidConfigResourceVersion = resourceVersion
-		log.DefaultLogger().Reason(err).Errorf("Invalid cluster config using '%s' resource version '%s', falling back to last good resource version '%s'", resourceType, resourceVersion, c.lastValidConfigResourceVersion)
-		return c.lastValidConfig
-	}
-	log.DefaultLogger().Infof("host device config: %s", c.namespace + "/" + HostDevConfigMapName)
-	objlist := c.hostDevConfigMapInformer.GetStore().List()
-	log.DefaultLogger().Infof("config maps list: %v", objlist)
-	objlistkeys := c.hostDevConfigMapInformer.GetStore().ListKeys()
-	log.DefaultLogger().Infof("config maps keys list: %v", objlistkeys)
-	if syncErr := c.hostDevConfigMapInformer.GetStore().Resync(); syncErr == nil {
-		objlist1 := c.hostDevConfigMapInformer.GetStore().List()
-		log.DefaultLogger().Infof("config maps list1: %v", objlist1)
-		objlistkeys1 := c.hostDevConfigMapInformer.GetStore().ListKeys()
-		log.DefaultLogger().Infof("config maps keys list1: %v", objlistkeys1)
-	}
-	if obj, exists, err := c.hostDevConfigMapInformer.GetStore().GetByKey(c.namespace + "/" + HostDevConfigMapName); err != nil {
-		log.DefaultLogger().Reason(err).Errorf("Error loading the cluster host device config from ConfigMap cache")
-	} else if exists {
-		hostDevConfigMap := obj.(*k8sv1.ConfigMap)
-		log.DefaultLogger().Infof("Got Hostdevice config: %v", hostDevConfigMap)
-		updateConfigFromHostDevConfigMap(config, hostDevConfigMap)
-	}
-
-	log.DefaultLogger().Infof("Updating cluster config to resource version '%s'", resourceVersion)
-	c.lastValidConfigResourceVersion = resourceVersion
-	c.lastValidConfig = config
 	return c.lastValidConfig
 }
 

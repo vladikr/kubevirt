@@ -20,10 +20,10 @@
 package device_manager
 
 import (
-	"fmt"
 	"math"
 	"os"
 	"time"
+	"strings"
 
 	"kubevirt.io/client-go/log"
 	virtconfig "kubevirt.io/kubevirt/pkg/virt-config"
@@ -59,7 +59,6 @@ func NewDeviceController(host string, maxDevices int, clusterConfig *virtconfig.
 		maxDevices: maxDevices,
 		backoff:    []time.Duration{1 * time.Second, 2 * time.Second, 5 * time.Second, 10 * time.Second},
 	}
-	clusterConfig.GetPermittedHostDevices()
 	controller.virtConfig = clusterConfig
 
 	return controller
@@ -74,6 +73,8 @@ func (c *DeviceController) nodeHasDevice(devicePath string) bool {
 func (c *DeviceController) startDevicePlugin(dev GenericDevice, stop chan struct{}) {
 	logger := log.DefaultLogger()
 	deviceName := dev.GetDeviceName()
+	logger.Infof(" device plugins: %v", c.devicePlugins)
+	logger.Infof(" device plugins device name: %v", deviceName)
 	retries := 0
 
 	for {
@@ -101,7 +102,7 @@ func (c *DeviceController) addPermittedHostDevicePlugins() {
 	if hostDevs := c.virtConfig.GetPermittedHostDevices(); hostDevs != nil {
 		logger.Infof("Device Controller: permitted devices: %v", hostDevs)
 		logger.Infof("Device Controller: permitted pci devices: %v", hostDevs.PciHostDevices)
-		logger.Infof("Device Controller: permitted pci devices: %v", hostDevs.MediatedDevices)
+		logger.Infof("Device Controller: mdevs: %v", hostDevs.MediatedDevices)
 		supportedPCIDeviceMap := make(map[string]string)
 		if len(hostDevs.PciHostDevices) != 0 {
 			for _, pciDev := range hostDevs.PciHostDevices {
@@ -125,7 +126,8 @@ func (c *DeviceController) addPermittedHostDevicePlugins() {
 			supportedMdevsMap := make(map[string]string)
 			for _, supportedMdev := range hostDevs.MediatedDevices {
 				if !supportedMdev.ExternalResourceProvider {
-					supportedMdevsMap[supportedMdev.ModelSelector] = supportedMdev.ResourceNamespace
+					selector := removeSelectorSpaces(supportedMdev.Selector)
+					supportedMdevsMap[selector] = supportedMdev.ResourceName
 				}
 			}
 
@@ -134,9 +136,7 @@ func (c *DeviceController) addPermittedHostDevicePlugins() {
 			logger.Infof("Device Controller: discovered mdevs: %v", hostMdevs)
 			mdevPlugins := []GenericDevice{}
 			for mdevTypeName, mdevUUIDs := range hostMdevs {
-				mdevResourceNamespace := supportedMdevsMap[mdevTypeName]
-				mdevResourceName := fmt.Sprintf("%s/%s", mdevResourceNamespace, mdevTypeName)
-				logger.Infof("Device Controller: getting mdevTypeName: %v, from supportedMdevsMap, got :%v", mdevTypeName, mdevResourceNamespace)
+				mdevResourceName := supportedMdevsMap[mdevTypeName]
 				logger.Infof("Device Controller: create mdev dp for %v", mdevResourceName)
 				mdevPlugins = append(mdevPlugins, NewMediatedDevicePlugin(mdevUUIDs, mdevResourceName))
 			}
@@ -145,11 +145,22 @@ func (c *DeviceController) addPermittedHostDevicePlugins() {
 	}
 }
 
+func removeSelectorSpaces(selectorName string) string {
+	// The name usually contain spaces which should be replaced with _
+	// Such as GRID T4-1Q
+	typeNameStr := strings.Replace(string(selectorName), " ", "_", -1)
+	typeNameStr = strings.TrimSpace(typeNameStr)
+	return typeNameStr
+
+}
+
 func (c *DeviceController) Run(stop chan struct{}) error {
 	logger := log.DefaultLogger()
 	logger.Info("Starting device plugin controller")
 	c.addPermittedHostDevicePlugins()
+	logger.Infof(" device plugins: %v", c.devicePlugins)
 	for _, dev := range c.devicePlugins {
+		logger.Infof(" device plugin dev: %v", dev)
 		go c.startDevicePlugin(dev, stop)
 	}
 

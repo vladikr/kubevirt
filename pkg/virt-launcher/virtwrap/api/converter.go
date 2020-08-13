@@ -49,6 +49,8 @@ import (
 	"kubevirt.io/kubevirt/pkg/util/net/dns"
 )
 
+type HostDeviceType string
+
 const (
 	CPUModeHostPassthrough = "host-passthrough"
 	CPUModeHostModel       = "host-model"
@@ -57,7 +59,15 @@ const (
 	EFIVars                = "OVMF_VARS.fd"
 	EFICodeSecureBoot      = "OVMF_CODE.secboot.fd"
 	EFIVarsSecureBoot      = "OVMF_VARS.secboot.fd"
+	HostDevicePCI HostDeviceType = "pci"
+	HostDeviceMDEV HostDeviceType = "mdev"
+	CacheWriteThrough DriverCache = "writethrough"
 )
+
+type HostDevicesList struct {
+	Type HostDeviceType
+	AddrList   []string
+}
 
 // +k8s:deepcopy-gen=false
 type ConverterContext struct {
@@ -73,8 +83,7 @@ type ConverterContext struct {
 	SMBios            *cmdv1.SMBios
 	GpuDevices        []string
 	VgpuDevices       []string
-	PCIDevices        map[string][]string
-	MediatedDevices   map[string][]string
+	HostDevices       map[string]HostDeviceList
 	EmulatorThreadCpu *int
 	OVMFPath          string
 	MemBalloonStatsPeriod uint
@@ -91,25 +100,16 @@ func popDeviceIDFromList(addrList []string) (string, []string) {
 }
 
 func getHostDeviceByResourceName(c *ConverterContext, resourceName string, name string) (HostDevice, error) {
-	if addresses, exist := c.PCIDevices[resourceName]; len(addresses) != 0 && exist {
-		addr, remainingAddresses := popDeviceIDFromList(addresses)
-		domainHostDev, err := createHostDevicesFromPCIAddress(addr, name)
+	if device, exist := c.HostDevices[resourceName]; len(device.AddrList) != 0 && exist {
+		addr, remainingAddresses := popDeviceIDFromList(device.AddrList)
+		domainHostDev, err := createHostDevicesFromAddress(device.Type, addr, name)
 		if err != nil {
 			return hostDevices, err
 		}
-		c.PCIDevices[resourceName] = remainingAddresses
+		device.AddrList = remainingAddresses
+		c.HostDevices[resourceName] = device
 		return domainHostDev, nil
 	}
-	if addresses, exist := c.MediatedDevices[resourceName]; len(addresses) != 0 && exist {
-		addr, remainingAddresses := popDeviceIDFromList(addresses)
-		domainMDev, err := createHostDevicesFromMdevUUID(addr, name)
-		if err != nil {
-			return hostDevices, err
-		}
-		c.MediatedDevices[resourceName] = remainingAddresses
-		return domainMDev, nil
-	}
-
 	return HostDevice{}, fmt.Errorf("failed to allocated a host device for resource: %s", resourceName)
 }
 
@@ -1661,6 +1661,15 @@ func decoratePciAddressField(addressField string) (*Address, error) {
 		Function: "0x" + dbsfFields[3],
 	}
 	return decoratedAddrField, nil
+}
+
+func createHostDevicesFromAddress(devType HostDeviceType, deviceID string, name string) (HostDevice, error) {
+	switch devType {
+	case HostDevicePCI:
+		return createHostDevicesFromPCIAddress(deviceID, name)
+	case HostDeviceMDEV:
+		return createHostDevicesFromMdevUUID(deviceID, name)
+	}
 }
 
 func createHostDevicesFromPCIAddress(pciAddr string, name string) (HostDevice, error) {

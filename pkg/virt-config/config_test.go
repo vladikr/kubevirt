@@ -36,7 +36,7 @@ var _ = Describe("ConfigMap", func() {
 	})
 
 	table.DescribeTable("when memBalloonStatsPeriod", func(value string, result uint32) {
-		clusterConfig, _, _, _, _ := testutils.NewFakeClusterConfig(&kubev1.ConfigMap{
+		clusterConfig, _, _, _ := testutils.NewFakeClusterConfig(&kubev1.ConfigMap{
 			Data: map[string]string{"memBalloonStatsPeriod": value},
 		})
 
@@ -341,20 +341,17 @@ var _ = Describe("ConfigMap", func() {
 		table.Entry("when unset, GetOVMFPath should return the default", "", virtconfig.DefaultOVMFPath),
 	)
 
-	/*It("Should get GetPermittedHostDevices", func() {
-		fakePermittedHostDevicesConfig := `
-pciDevices:
-  - pciVendorSelector: "10DE:1EB8"
-    resourceName: "nvidia.com/TU104GL_Tesla_T4"
-mdevs:
-  - mdevNameSelector: "GRID T4-1Q"
-    resourceName: "nvidia.com/GRID_T4-1Q"
-`
+	It("Should still get GetPermittedHostDevices after invalid update", func() {
 		expectedDevices := `{"pciDevices":[{"pciVendorSelector":"10DE:1EB8","resourceName":"nvidia.com/TU104GL_Tesla_T4"}],"mdevs":[{"mdevNameSelector":"GRID T4-1Q","resourceName":"nvidia.com/GRID_T4-1Q"}]}`
-		clusterConfig, _, _, _, hostDevConfigMapInformer := testutils.NewFakeClusterConfig(&kubev1.ConfigMap{})
-		testutils.UpdateFakeClusterConfigByName(hostDevConfigMapInformer, &kubev1.ConfigMap{
-			Data: map[string]string{virtconfig.PermittedHostDevicesKey: fakePermittedHostDevicesConfig},
-		}, testutils.HostDevicesConfigMapName)
+		invalidPermittedHostDevicesConfig := "something wrong"
+		clusterConfig, store, _, _ := testutils.NewFakeClusterConfig(&kubev1.ConfigMap{})
+		testutils.UpdateFakeClusterConfig(store, &kubev1.ConfigMap{
+			Data: map[string]string{virtconfig.PermittedHostDevicesKey: expectedDevices},
+		})
+		clusterConfig.GetPermittedHostDevices()
+		testutils.UpdateFakeClusterConfig(store, &kubev1.ConfigMap{
+			Data: map[string]string{virtconfig.PermittedHostDevicesKey: invalidPermittedHostDevicesConfig},
+		})
 		hostdevs := clusterConfig.GetPermittedHostDevices()
 
 		hostdevsJson, err := json.Marshal(hostdevs)
@@ -362,32 +359,6 @@ mdevs:
 
 		Expect(string(hostdevsJson)).To(BeEquivalentTo(expectedDevices))
 	})
-	It("Should still get GetPermittedHostDevices after invalid update", func() {
-		fakePermittedHostDevicesConfig := `
-pciDevices:
-  - pciVendorSelector: "10DE:1EB8"
-    resourceName: "nvidia.com/TU104GL_Tesla_T4"
-mdevs:
-  - mdevNameSelector: "GRID T4-1Q"
-    resourceName: "nvidia.com/GRID_T4-1Q"
-`
-		expectedDevices := `{"pciDevices":[{"pciVendorSelector":"10DE:1EB8","resourceName":"nvidia.com/TU104GL_Tesla_T4"}],"mdevs":[{"mdevNameSelector":"GRID T4-1Q","resourceName":"nvidia.com/GRID_T4-1Q"}]}`
-		invalidPermittedHostDevicesConfig := "something wrong"
-		clusterConfig, _, _, _, hostDevConfigMapInformer := testutils.NewFakeClusterConfig(&kubev1.ConfigMap{})
-		testutils.UpdateFakeClusterConfigByName(hostDevConfigMapInformer, &kubev1.ConfigMap{
-			Data: map[string]string{virtconfig.PermittedHostDevicesKey: fakePermittedHostDevicesConfig},
-		}, testutils.HostDevicesConfigMapName)
-		clusterConfig.GetPermittedHostDevices()
-		testutils.UpdateFakeClusterConfigByName(hostDevConfigMapInformer, &kubev1.ConfigMap{
-			Data: map[string]string{virtconfig.PermittedHostDevicesKey: invalidPermittedHostDevicesConfig},
-		}, testutils.HostDevicesConfigMapName)
-		hostdevs := clusterConfig.GetPermittedHostDevices()
-
-		hostdevsJson, err := json.Marshal(hostdevs)
-		Expect(err).ToNot(HaveOccurred())
-
-		Expect(string(hostdevsJson)).To(BeEquivalentTo(expectedDevices))
-	})*/
 
 	table.DescribeTable("when kubevirt CR holds config", func(value string, result v1.KubeVirtConfiguration) {
 		clusterConfig, _, _, _ := testutils.NewFakeClusterConfigUsingKV(&v1.KubeVirt{

@@ -1204,7 +1204,12 @@ func (d *VirtualMachineController) migrationTargetExecute(key string,
 			// record that we've see the domain populated on the target's node
 			log.Log.Object(vmi).Info("The target node received the migrated domain")
 			vmiCopy.Status.MigrationState.TargetNodeDomainDetected = true
-			d.setVMIGuestTime(vmi)
+			// try to set time only on active domains
+			if domain.Status.Status != api.Shutoff &&
+				domain.Status.Status != api.Crashed &&
+				domain.Status.Status != "" {
+				d.setVMIGuestTime(vmi)
+			}
 		}
 		if !migrations.IsMigrating(vmi) {
 

@@ -1539,7 +1539,7 @@ var _ = Describe("VirtualMachineInstance", func() {
 
 			controller.Execute()
 		}, 3)
-		It("update guest time after completed migration", func() {
+		It("do not update guest time after completed failed migration", func() {
 			vmi := v1.NewMinimalVMI("testvmi")
 			vmi.UID = vmiTestUUID
 			vmi.ObjectMeta.ResourceVersion = "1"
@@ -1559,7 +1559,7 @@ var _ = Describe("VirtualMachineInstance", func() {
 
 			mockWatchdog.CreateFile(vmi)
 			domain := api.NewMinimalDomainWithUUID("testvmi", vmiTestUUID)
-			domain.Status.Status = api.Running
+			domain.Status.Status = api.Shutoff
 
 			domain.Spec.Metadata.KubeVirt.Migration = &api.MigrationMetadata{
 				UID:            "123",
@@ -1572,7 +1572,6 @@ var _ = Describe("VirtualMachineInstance", func() {
 			vmiUpdated := vmi.DeepCopy()
 			vmiUpdated.Status.MigrationState.TargetNodeDomainDetected = true
 			client.EXPECT().Ping().AnyTimes()
-			client.EXPECT().SetVirtualMachineGuestTime(vmi)
 			vmiInterface.EXPECT().Update(vmiUpdated)
 
 			controller.Execute()

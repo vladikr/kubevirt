@@ -254,6 +254,41 @@ func (c *MigrationController) canMigrateVMI(migration *virtv1.VirtualMachineInst
 
 }
 
+func (c *MigrationController) canCreateTarget(migration *virtv1.VirtualMachineInstanceMigration, vmi *virtv1.VirtualMachineInstance) (bool, error) {
+
+	// get all known migrations in the VMI's namespace
+	objs, err := c.migrationInformer.GetIndexer().ByIndex(cache.NamespaceIndex, migration.Namespace)
+	if err != nil {
+		return false, err
+	}
+
+	// find the ones that match the VMI, if a migration is found that isn't finalized, see if it has any active pods, if so bail.
+	for _, obj := range objs {
+		curMigration := obj.(*virtv1.VirtualMachineInstanceMigration)
+		if curMigration.Spec.VMIName != vmi.Name {
+			continue
+		} else if string(curMigration.UID) == string(migration.UID) {
+			continue
+		} else if curMigration.IsFinal() {
+			continue
+		}
+
+		// curMigration is inflight and does not match the migration the sync loop is working on.
+		targetPods, err := c.listMatchingTargetPods(migration, vmi)
+		if err != nil {
+			return false, err
+		}
+		for _, targetPod := range targetPods {
+			if targetPod.Status.Phase != k8sv1.PodSucceeded && targetPod.Status.Phase != k8sv1.PodFailed {
+				// another migration exists with an active target pod.
+				return false, nil
+			}
+		}
+	}
+
+	return true, nil
+}
+
 func (c *MigrationController) updateStatus(migration *virtv1.VirtualMachineInstanceMigration, vmi *virtv1.VirtualMachineInstance, pods []*k8sv1.Pod, syncErr error) error {
 
 	var pod *k8sv1.Pod = nil
@@ -534,7 +569,8 @@ func (c *MigrationController) sync(key string, migration *virtv1.VirtualMachineI
 
 			// migration was accepted into the system, now see if we
 			// should create the target pod
-			if vmi.IsRunning() {
+			okToCreate, err := c.canCreateTarget(migration, vmi)
+			if err == nil && okToCreate && vmi.IsRunning() {
 				return c.createTargetPod(migration, vmi)
 			}
 			return nil

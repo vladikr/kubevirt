@@ -877,9 +877,9 @@ func (d *VirtualMachineController) updateIsoSizeStatus(vmi *v1.VirtualMachineIns
 		if err != nil {
 			continue
 		}
-		for _, vs := range vmi.Status.VolumeStatus {
-			if vs.Name == volume.Name {
-				vs.Size = stats.Size()
+		for i, _ := range vmi.Status.VolumeStatus {
+			if vmi.Status.VolumeStatus[i].Name == volume.Name {
+				vmi.Status.VolumeStatus[i].Size = stats.Size()
 				continue
 			}
 		}

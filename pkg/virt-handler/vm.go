@@ -837,7 +837,7 @@ func (d *VirtualMachineController) updateVolumeStatusesFromDomain(vmi *v1.Virtua
 	return hasHotplug
 }
 
-func (d *VirtualMachineController) updateIsoSizeStatus(vmi *v1.VirtualMachineInstance) {
+func (d *VirtualMachineController) updateIsoSizeStatus1(vmi *v1.VirtualMachineInstance) {
 	var podUID string
 	if vmi.Status.Phase != v1.Running {
 		return
@@ -886,6 +886,76 @@ func (d *VirtualMachineController) updateIsoSizeStatus(vmi *v1.VirtualMachineIns
 	}
 }
 
+func (d *VirtualMachineController) updateIsoSizeStatus(vmi *v1.VirtualMachineInstance) {
+	vmiCopy := vmi.DeepCopy()
+	log.DefaultLogger().V(2).Info("JED ENTERING ISO SIZE STATUS")
+	var podUID string
+	if vmi.Status.Phase != v1.Running {
+		log.DefaultLogger().V(2).Infof("JED VMI NOT RUNNING: %s", vmi.Name)
+		return
+	}
+
+	for k, v := range vmi.Status.ActivePods {
+		if v == vmi.Status.NodeName {
+			podUID = string(k)
+			break
+		}
+	}
+	if podUID == "" {
+		log.DefaultLogger().V(2).Infof("JED NO PODUID FOR %s", vmi.Name)
+		return
+	}
+
+	basepath := "/var/run"
+	for _, volume := range vmi.Spec.Volumes {
+		var volPath string
+		if volume.CloudInitNoCloud != nil {
+			volPath = path.Join(basepath, "kubevirt-ephemeral-disks", "cloud-init-data", vmi.Namespace, vmi.Name, "noCloud.iso")
+		} else if volume.CloudInitConfigDrive != nil {
+			volPath = path.Join(basepath, "kubevirt-ephemeral-disks", "cloud-init-data", vmi.Namespace, vmi.Name, "configdrive.iso")
+		} else if volume.ConfigMap != nil {
+			volPath = path.Join(basepath, "kubevirt-private", path.Base(config.ConfigMapDisksDir), volume.Name+".iso")
+		} else if volume.DownwardAPI != nil {
+			volPath = path.Join(basepath, "kubevirt-private", path.Base(config.DownwardAPIDisksDir), volume.Name+".iso")
+		} else if volume.Secret != nil {
+			volPath = path.Join(basepath, "kubevirt-private", path.Base(config.SecretDisksDir), volume.Name+".iso")
+		} else if volume.ServiceAccount != nil {
+			volPath = path.Join(basepath, "kubevirt-private", path.Base(config.ServiceAccountDiskDir), config.ServiceAccountDiskName)
+		} else if volume.Sysprep != nil {
+			volPath = path.Join(basepath, "kubevirt-private", path.Base(config.SysprepDisksDir), volume.Name+".iso")
+		} else {
+			log.DefaultLogger().V(2).Infof("JED NOT A KNOW ISO %s", volume.Name)
+			continue
+		}
+		res, err := d.podIsolationDetector.Detect(vmi)
+		if err != nil {
+			log.DefaultLogger().V(2).Infof("JED FAILED TO DETECT VMI %s", vmi.Name)
+			continue
+		}
+		size, err := isolation.GetFileSize(volPath, res)
+		if err != nil {
+			log.DefaultLogger().V(2).Infof("JED FAILED TO GET FILE SIZE FOR %s", volPath)
+			continue
+		}
+
+		for i, _ := range vmi.Status.VolumeStatus {
+			if vmiCopy.Status.VolumeStatus[i].Name == volume.Name {
+				vmiCopy.Status.VolumeStatus[i].Size = int64(size)
+				log.DefaultLogger().V(2).Infof("JED UPDATED THE SIZE OF %s TO %d", vmiCopy.Status.VolumeStatus[i].Name, vmiCopy.Status.VolumeStatus[i].Size)
+				continue
+			}
+		}
+	}
+	// update the VMI if necessary
+	if !reflect.DeepEqual(vmi.Status, vmiCopy.Status) {
+		_, err := d.clientset.VirtualMachineInstance(vmi.ObjectMeta.Namespace).Update(vmiCopy)
+		if err != nil {
+			log.Log.Reason(err).Error("can't update vmi status volumeStatus")
+		}
+	}
+	log.DefaultLogger().V(2).Info("JED UPDATE ISO SIZE STATUS DONE")
+}
+
 func (d *VirtualMachineController) updateVMIStatus(origVMI *v1.VirtualMachineInstance, domain *api.Domain, syncError error) (err error) {
 	condManager := controller.NewVirtualMachineInstanceConditionManager()
 	hasHotplug := false
@@ -927,7 +997,11 @@ func (d *VirtualMachineController) updateVMIStatus(origVMI *v1.VirtualMachineIns
 			}
 		}
 
+		log.Log.Infof("DEBUG: b4 hotplug volumesStatus: %v", vmi.Status.VolumeStatus)
 		hasHotplug = d.updateVolumeStatusesFromDomain(vmi, domain)
+		log.Log.Infof("DEBUG: after hostplug volumesStatus: %v", vmi.Status.VolumeStatus)
+		d.updateIsoSizeStatus(vmi)
+		log.Log.Infof("DEBUG: after update volumesStatus: %v", vmi.Status.VolumeStatus)
 		if len(vmi.Status.Interfaces) == 0 {
 			// Set Pod Interface
 			interfaces := make([]v1.VirtualMachineInstanceNetworkInterface, 0)
@@ -1197,6 +1271,7 @@ func (d *VirtualMachineController) updateVMIStatus(origVMI *v1.VirtualMachineIns
 	}
 	condManager.CheckFailure(vmi, syncError, "Synchronizing with the Domain failed.")
 
+	log.Log.Infof("DEBUG: after update volumesStatus: %v", vmi.Status.VolumeStatus)
 	if !reflect.DeepEqual(oldStatus, vmi.Status) {
 		_, err = d.clientset.VirtualMachineInstance(vmi.ObjectMeta.Namespace).Update(vmi)
 		if err != nil {

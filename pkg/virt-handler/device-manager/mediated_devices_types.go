@@ -48,32 +48,53 @@ func NewMDEVTypesManager() *MDEVTypesManager {
 	}
 }
 
+func (m *MDEVTypesManager) getAlreadyConfiguredMdevParents() (map[string]struct{}, error){
+
+	configuredPCICards = make(map[string]struct{})
+	files, err := filepath.Glob("/sys/bus/mdev/devices/*")
+	if err != nil {
+		return err
+	}
+
+	for _, file := range files {
+		originFile, err := os.Readlink(file)
+		if err != nil {
+			return err
+		}
+
+		filePathParts := strings.Split(originFile, string(os.PathSeparator))
+		parentID := filePathParts[len(filePathParts)-3]
+		configuredPCICards[parenItID] = struct{}{}
+	}
+	return configuredPCICards
+}
+
 func (m *MDEVTypesManager) updateMDEVTypesConfiguration(desiredTypesList []string) (bool, error) {
 	isConfigUpdated := false
 	m.mdevsConfigurationMutex.Lock()
 	defer m.mdevsConfigurationMutex.Unlock()
 
-	desiredTypesBytes := []byte(strings.Join(desiredTypesList, ","))
-	if bytes.Compare(m.configuredMdevTypes, desiredTypesBytes) != 0 {
 
-		// construct a map of desired types for lookup
-		desiredTypesMap := make(map[string]struct{})
-		for _, mdevType := range desiredTypesList {
-			desiredTypesMap[mdevType] = struct{}{}
-		}
-		removeUndesiredMDEVs(desiredTypesMap)
-		err := m.discoverConfigurableMDEVTypes(desiredTypesMap)
-		if err != nil {
-			log.Log.Reason(err).Error("failed to discover which mdev types are available for configuration")
-			return isConfigUpdated, err
-		}
-		if len(desiredTypesMap) > 0 {
-			m.configureDesiredMDEVTypes()
-		}
-		// store the configured list of types
-		m.configuredMdevTypes = desiredTypesBytes
-		isConfigUpdated = true
-	}
+			    m.availableMdevTypesMap[typeID] = ar
+
+    // construct a map of desired types for lookup
+    desiredTypesMap := make(map[string]struct{})
+    for _, mdevType := range desiredTypesList {
+        desiredTypesMap[mdevType] = struct{}{}
+    }
+    removeUndesiredMDEVs(desiredTypesMap)
+
+    err := m.discoverConfigurableMDEVTypes(desiredTypesMap)
+    if err != nil {
+        log.Log.Reason(err).Error("failed to discover which mdev types are available for configuration")
+        return isConfigUpdated, err
+    }
+
+    if len(desiredTypesMap) > 0 {
+        m.configureDesiredMDEVTypes()
+    }
+
+	isConfigUpdated = true
 	return isConfigUpdated, nil
 }
 
@@ -81,6 +102,13 @@ func (m *MDEVTypesManager) updateMDEVTypesConfiguration(desiredTypesList []strin
 func (m *MDEVTypesManager) discoverConfigurableMDEVTypes(desiredTypesMap map[string]struct{}) error {
 	// initialize unconfigured parents map
 	m.unconfiguredParentsMap = make(map[string]struct{})
+
+
+    // a map of mdev providers that already have configuted mdevs
+    existingMdevProviders, err := m.getAlreadyConfiguredMdevParents()
+	if err != nil {
+		return err
+	}
 
 	files, err := filepath.Glob(mdevClassBusPath + "/**/mdev_supported_types/*")
 	if err != nil {
@@ -115,9 +143,12 @@ func (m *MDEVTypesManager) discoverConfigurableMDEVTypes(desiredTypesMap map[str
 			if !exist {
 				ar = []string{}
 			}
-			ar = append(ar, parentID)
-			m.availableMdevTypesMap[typeID] = ar
-			m.unconfiguredParentsMap[parentID] = struct{}{}
+
+            if _, exist := existingMdevProviders[parentID]; !exist {
+			    ar = append(ar, parentID)
+			    m.availableMdevTypesMap[typeID] = ar
+			    m.unconfiguredParentsMap[parentID] = struct{}{}
+            }
 		}
 	}
 	return nil

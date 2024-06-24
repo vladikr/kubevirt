@@ -66,7 +66,6 @@ import (
 	virtcache "kubevirt.io/kubevirt/pkg/virt-handler/cache"
 	"kubevirt.io/kubevirt/pkg/virt-handler/cgroup"
 	cmdclient "kubevirt.io/kubevirt/pkg/virt-handler/cmd-client"
-	containerdisk "kubevirt.io/kubevirt/pkg/virt-handler/container-disk"
 	hotplugvolume "kubevirt.io/kubevirt/pkg/virt-handler/hotplug-disk"
 	"kubevirt.io/kubevirt/pkg/virt-handler/isolation"
 	migrationproxy "kubevirt.io/kubevirt/pkg/virt-handler/migration-proxy"
@@ -85,7 +84,6 @@ var _ = Describe("VirtualMachineInstance", func() {
 	var mockQueue *testutils.MockWorkQueue
 	var mockIsolationDetector *isolation.MockPodIsolationDetector
 	var mockIsolationResult *isolation.MockIsolationResult
-	var mockContainerDiskMounter *containerdisk.MockMounter
 	var mockHotplugVolumeMounter *hotplugvolume.MockVolumeMounter
 	var mockCgroupManager *cgroup.MockManager
 
@@ -191,7 +189,6 @@ var _ = Describe("VirtualMachineInstance", func() {
 		mockIsolationDetector.EXPECT().Detect(gomock.Any()).Return(mockIsolationResult, nil).AnyTimes()
 		mockIsolationDetector.EXPECT().AdjustResources(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
-		mockContainerDiskMounter = containerdisk.NewMockMounter(ctrl)
 		mockHotplugVolumeMounter = hotplugvolume.NewMockVolumeMounter(ctrl)
 		mockCgroupManager = cgroup.NewMockManager(ctrl)
 
@@ -1056,115 +1053,6 @@ var _ = Describe("VirtualMachineInstance", func() {
 					"Status": Equal(k8sv1.ConditionTrue)},
 				),
 			))
-		})
-
-		Context("reacting to a VMI with a containerDisk", func() {
-			BeforeEach(func() {
-				controller.containerDiskMounter = mockContainerDiskMounter
-			})
-			It("should retry silently if a containerDisk is not yet ready", func() {
-				vmi := NewScheduledVMIWithContainerDisk(vmiTestUUID, podTestUUID, host)
-
-				vmiFeeder.Add(vmi)
-				createVMI(vmi)
-				mockContainerDiskMounter.EXPECT().ContainerDisksReady(vmi, gomock.Any()).Return(false, nil)
-
-				controller.Execute()
-
-				Expect(mockQueue.GetAddAfterEnqueueCount()).To(Equal(1))
-				Expect(mockQueue.Len()).To(Equal(0))
-				Expect(mockQueue.GetRateLimitedEnqueueCount()).To(Equal(0))
-			})
-
-			It("should retry noisy if a containerDisk is not yet ready and the suppress timeout is over", func() {
-				vmi := NewScheduledVMIWithContainerDisk(vmiTestUUID, podTestUUID, host)
-
-				vmiFeeder.Add(vmi)
-				createVMI(vmi)
-				mockContainerDiskMounter.EXPECT().ContainerDisksReady(vmi, gomock.Any()).DoAndReturn(func(vmi *v1.VirtualMachineInstance, notReadySince time.Time) (bool, error) {
-					Expect(notReadySince.Before(time.Now())).To(BeTrue())
-					return false, fmt.Errorf("out of time")
-				})
-
-				controller.Execute()
-
-				testutils.ExpectEvent(recorder, "out of time")
-				Expect(mockQueue.GetAddAfterEnqueueCount()).To(Equal(0))
-				Expect(mockQueue.Len()).To(Equal(0))
-				Expect(mockQueue.GetRateLimitedEnqueueCount()).To(Equal(1))
-			})
-
-			It("should continue to mount containerDisks if the containerDisks are ready", func() {
-				vmi := NewScheduledVMIWithContainerDisk(vmiTestUUID, podTestUUID, host)
-
-				vmiFeeder.Add(vmi)
-				createVMI(vmi)
-				mockContainerDiskMounter.EXPECT().ContainerDisksReady(vmi, gomock.Any()).DoAndReturn(func(vmi *v1.VirtualMachineInstance, notReadySince time.Time) (bool, error) {
-					Expect(notReadySince.Before(time.Now())).To(BeTrue())
-					return true, nil
-				})
-				mockContainerDiskMounter.EXPECT().MountAndVerify(gomock.Any()).Return(nil, fmt.Errorf("aborting since we only want to reach this point"))
-
-				controller.Execute()
-
-				testutils.ExpectEvent(recorder, "aborting since we only want to reach this point")
-				Expect(mockQueue.GetAddAfterEnqueueCount()).To(Equal(0))
-				Expect(mockQueue.Len()).To(Equal(0))
-				Expect(mockQueue.GetRateLimitedEnqueueCount()).To(Equal(1))
-			})
-
-			It("should compute checksums for the specified containerDisks and kernelboot containers", func() {
-				vmi := NewScheduledVMIWithContainerDisk(vmiTestUUID, podTestUUID, host)
-				vmi.Status.Phase = v1.Running
-				vmi.Status.VolumeStatus = []v1.VolumeStatus{
-					v1.VolumeStatus{
-						Name: vmi.Spec.Volumes[0].Name,
-					},
-				}
-				vmi.Spec.Domain.Firmware = &v1.Firmware{
-					KernelBoot: &v1.KernelBoot{
-						Container: &v1.KernelBootContainer{
-							KernelPath: "/vmlinuz",
-							InitrdPath: "/initrd",
-						},
-					},
-				}
-
-				domain := api.NewMinimalDomainWithUUID("testvmi", vmiTestUUID)
-				domain.Status.Status = api.Running
-				domainFeeder.Add(domain)
-
-				vmiFeeder.Add(vmi)
-				createVMI(vmi)
-
-				fakeDiskChecksums := &containerdisk.DiskChecksums{
-					ContainerDiskChecksums: map[string]uint32{
-						vmi.Spec.Volumes[0].Name: uint32(1234),
-					},
-					KernelBootChecksum: containerdisk.KernelBootChecksum{
-						Kernel: pointer.P(uint32(33)),
-						Initrd: pointer.P(uint32(35)),
-					},
-				}
-
-				mockHotplugVolumeMounter.EXPECT().Mount(gomock.Any(), gomock.Any()).Return(nil)
-				mockContainerDiskMounter.EXPECT().ComputeChecksums(gomock.Any()).Return(fakeDiskChecksums, nil)
-				client.EXPECT().SyncVirtualMachine(gomock.Any(), gomock.Any()).Return(nil)
-				mockHotplugVolumeMounter.EXPECT().Unmount(gomock.Any(), gomock.Any()).Return(nil)
-
-				controller.Execute()
-
-				updatedVMI, err := virtfakeClient.KubevirtV1().VirtualMachineInstances(metav1.NamespaceDefault).Get(context.TODO(), vmi.Name, metav1.GetOptions{})
-				Expect(err).NotTo(HaveOccurred())
-				Expect(updatedVMI.Status.VolumeStatus).To(HaveLen(1))
-				Expect(updatedVMI.Status.VolumeStatus[0].ContainerDiskVolume).ToNot(BeNil())
-				Expect(updatedVMI.Status.VolumeStatus[0].ContainerDiskVolume.Checksum).To(Equal(fakeDiskChecksums.ContainerDiskChecksums[vmi.Status.VolumeStatus[0].Name]))
-				Expect(updatedVMI.Status.KernelBootStatus).ToNot(BeNil())
-				Expect(updatedVMI.Status.KernelBootStatus.KernelInfo).ToNot(BeNil())
-				Expect(updatedVMI.Status.KernelBootStatus.KernelInfo.Checksum).To(Equal(*fakeDiskChecksums.KernelBootChecksum.Kernel))
-				Expect(updatedVMI.Status.KernelBootStatus.InitrdInfo).ToNot(BeNil())
-				Expect(updatedVMI.Status.KernelBootStatus.InitrdInfo.Checksum).To(Equal(*fakeDiskChecksums.KernelBootChecksum.Initrd))
-			})
 		})
 
 		Context("reacting to a VMI with hotplug", func() {

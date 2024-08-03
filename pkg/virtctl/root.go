@@ -33,6 +33,7 @@ import (
 	"kubevirt.io/kubevirt/pkg/virtctl/vm"
 	"kubevirt.io/kubevirt/pkg/virtctl/vmexport"
 	"kubevirt.io/kubevirt/pkg/virtctl/vnc"
+	"kubevirt.io/kubevirt/pkg/virtctl/vmpodtransformer"
 )
 
 var programName string
@@ -110,6 +111,7 @@ func NewVirtctlCommand() (*cobra.Command, clientcmd.ClientConfig) {
 		create.NewCommand(clientConfig),
 		credentials.NewCommand(clientConfig),
 		adm.NewCommand(clientConfig),
+        vmpodtransformer.NewVMToPodCommand(clientConfig),
 		optionsCmd,
 	)
 	return rootCmd, clientConfig

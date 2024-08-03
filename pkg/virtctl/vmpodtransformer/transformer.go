@@ -22,27 +22,15 @@ package vmpodtransformer
 import (
 	_ "embed"
     "encoding/json"
-	//"encoding/xml"
-	//"errors"
 	"fmt"
-	//"io/fs"
 	"os"
-	//"path"
-	//"path/filepath"
-	//"strconv"
-	//"strings"
 	"bytes"
 
-	//"sigs.k8s.io/yaml"
 	"github.com/spf13/cobra"
 
 	k8sv1 "k8s.io/api/core/v1"
 	"kubevirt.io/client-go/kubecli"
-	//"k8s.io/apimachinery/pkg/api/equality"
-	//"k8s.io/apimachinery/pkg/api/resource"
-	//k8smeta "k8s.io/apimachinery/pkg/apis/meta/v1"
     "k8s.io/client-go/tools/cache"
-	//"k8s.io/utils/pointer"
 	"sigs.k8s.io/yaml"
     yml "k8s.io/apimachinery/pkg/util/yaml"
     extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -81,7 +69,6 @@ func NewVMToPodCommand(clientConfig clientcmd.ClientConfig) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&filePath, filePathArg, filePathArgShort, "", "Path to the Virtual Machine spec.")
-	//cmd.MarkFlagsMutuallyExclusive(filePathArg, vmArg)
 	cmd.SetUsageTemplate(templates.UsageTemplate())
 	return cmd
 }
@@ -149,14 +136,12 @@ func (o *Command) vmToPodRun(args []string, cmd *cobra.Command) error {
         namespaceStore,
     )
 
-    print(vmi)
-    formatedOutput1, _ := yaml.Marshal(vmi)
-
-	print(string(formatedOutput1))
+    //print(vmi)
+    //formatedOutput1, _ := yaml.Marshal(vmi)
+	//print(string(formatedOutput1))
 
 //templateService services.TemplateService,
     templatePod, err := svc.RenderLaunchManifest(vmi)
-//	if curPodImage != "" && curPodImage != c.templateService.GetLauncherImage() {
 
     // transform vmi to JSON
 	vmiJSON, err := vmiToJSON(vmi)
@@ -171,6 +156,10 @@ func (o *Command) vmToPodRun(args []string, cmd *cobra.Command) error {
         }   
     }
     
+    print("-------------------------------")
+    //print(templatePod.GetObjectKind())
+    //print(templatePod.GetObjectKind().GroupVersionKind())
+    print("-------------------------------")
 
 
 	output, err := applyOutputFormat(templatePod)

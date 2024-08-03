@@ -49,6 +49,54 @@ type VMIsMutator struct {
 
 const presetDeprecationWarning = "kubevirt.io/v1 VirtualMachineInstancePresets is now deprecated and will be removed in v2."
 
+
+func ApplyNewVMIMutations(newVMI *v1.VirtualMachineInstance, clusterConfig *virtconfig.ClusterConfig) error {
+		// Set VirtualMachineInstance defaults
+		log.Log.Object(newVMI).V(4).Info("Apply defaults")
+		if err := webhooks.SetDefaultVirtualMachineInstance(clusterConfig, newVMI); err != nil {
+			return err
+		}
+
+		if newVMI.IsRealtimeEnabled() {
+			log.Log.V(4).Info("Add realtime node label selector")
+			addNodeSelector(newVMI, v1.RealtimeLabel)
+		}
+		if util.IsSEVVMI(newVMI) {
+			log.Log.V(4).Info("Add SEV node label selector")
+			addNodeSelector(newVMI, v1.SEVLabel)
+		}
+		if util.IsSEVESVMI(newVMI) {
+			log.Log.V(4).Info("Add SEV-ES node label selector")
+			addNodeSelector(newVMI, v1.SEVESLabel)
+		}
+
+		if newVMI.Spec.Domain.CPU.IsolateEmulatorThread {
+			_, emulatorThreadCompleteToEvenParityAnnotationExists := clusterConfig.GetConfigFromKubeVirtCR().Annotations[v1.EmulatorThreadCompleteToEvenParity]
+			if emulatorThreadCompleteToEvenParityAnnotationExists &&
+				clusterConfig.AlignCPUsEnabled() {
+				log.Log.V(4).Infof("Copy %s annotation from Kubevirt CR", v1.EmulatorThreadCompleteToEvenParity)
+				if newVMI.Annotations == nil {
+					newVMI.Annotations = map[string]string{}
+				}
+				newVMI.Annotations[v1.EmulatorThreadCompleteToEvenParity] = ""
+			}
+		}
+
+		// Add foreground finalizer
+		newVMI.Finalizers = append(newVMI.Finalizers, v1.VirtualMachineInstanceFinalizer)
+
+		// Set the phase to pending to avoid blank status
+		newVMI.Status.Phase = v1.Pending
+
+		now := metav1.NewTime(time.Now())
+		newVMI.Status.PhaseTransitionTimestamps = append(newVMI.Status.PhaseTransitionTimestamps, v1.VirtualMachineInstancePhaseTransitionTimestamp{
+			Phase:                    newVMI.Status.Phase,
+			PhaseTransitionTimestamp: now,
+		})
+    return nil
+}
+
+
 func (mutator *VMIsMutator) Mutate(ar *admissionv1.AdmissionReview) *admissionv1.AdmissionResponse {
 	if !webhookutils.ValidateRequestResource(ar.Request.Resource, webhooks.VirtualMachineInstanceGroupVersionResource.Group, webhooks.VirtualMachineInstanceGroupVersionResource.Resource) {
 		err := fmt.Errorf("expect resource to be '%s'", webhooks.VirtualMachineInstanceGroupVersionResource.Resource)
@@ -79,48 +127,7 @@ func (mutator *VMIsMutator) Mutate(ar *admissionv1.AdmissionReview) *admissionv1
 			}
 		}
 
-		// Set VirtualMachineInstance defaults
-		log.Log.Object(newVMI).V(4).Info("Apply defaults")
-		if err = webhooks.SetDefaultVirtualMachineInstance(mutator.ClusterConfig, newVMI); err != nil {
-			return webhookutils.ToAdmissionResponseError(err)
-		}
-
-		if newVMI.IsRealtimeEnabled() {
-			log.Log.V(4).Info("Add realtime node label selector")
-			addNodeSelector(newVMI, v1.RealtimeLabel)
-		}
-		if util.IsSEVVMI(newVMI) {
-			log.Log.V(4).Info("Add SEV node label selector")
-			addNodeSelector(newVMI, v1.SEVLabel)
-		}
-		if util.IsSEVESVMI(newVMI) {
-			log.Log.V(4).Info("Add SEV-ES node label selector")
-			addNodeSelector(newVMI, v1.SEVESLabel)
-		}
-
-		if newVMI.Spec.Domain.CPU.IsolateEmulatorThread {
-			_, emulatorThreadCompleteToEvenParityAnnotationExists := mutator.ClusterConfig.GetConfigFromKubeVirtCR().Annotations[v1.EmulatorThreadCompleteToEvenParity]
-			if emulatorThreadCompleteToEvenParityAnnotationExists &&
-				mutator.ClusterConfig.AlignCPUsEnabled() {
-				log.Log.V(4).Infof("Copy %s annotation from Kubevirt CR", v1.EmulatorThreadCompleteToEvenParity)
-				if newVMI.Annotations == nil {
-					newVMI.Annotations = map[string]string{}
-				}
-				newVMI.Annotations[v1.EmulatorThreadCompleteToEvenParity] = ""
-			}
-		}
-
-		// Add foreground finalizer
-		newVMI.Finalizers = append(newVMI.Finalizers, v1.VirtualMachineInstanceFinalizer)
-
-		// Set the phase to pending to avoid blank status
-		newVMI.Status.Phase = v1.Pending
-
-		now := metav1.NewTime(time.Now())
-		newVMI.Status.PhaseTransitionTimestamps = append(newVMI.Status.PhaseTransitionTimestamps, v1.VirtualMachineInstancePhaseTransitionTimestamp{
-			Phase:                    newVMI.Status.Phase,
-			PhaseTransitionTimestamp: now,
-		})
+        ApplyNewVMIMutations(newVMI, mutator.ClusterConfig)
 
 		if !mutator.ClusterConfig.RootEnabled() {
 			util.MarkAsNonroot(newVMI)

@@ -91,9 +91,15 @@ func newPodNIC(vmi *v1.VirtualMachineInstance, network *v1.Network, iface *v1.In
 func (l *podNIC) PlugPhase2(domain *api.Domain) error {
 	precond.MustNotBeNil(domain)
 
-	if err := l.domainGenerator.Generate(); err != nil {
-		log.Log.Reason(err).Critical("failed to create libvirt configuration")
-	}
+    if l.domainGenerator != nil {
+        if err := l.domainGenerator.Generate(); err != nil {
+            log.Log.Reason(err).Critical("failed to create libvirt configuration")
+            return fmt.Errorf("failed to create libvirt configuration")
+        }
+    } else {
+            log.Log.Critical("failed to create libvirt configuraton for nic, not tap found.")
+            return fmt.Errorf("failed to create libvirt configuraton for nic, not tap found.")
+    }
 
 	if l.dhcpConfigurator != nil {
 		dhcpConfig, err := l.dhcpConfigurator.Generate()

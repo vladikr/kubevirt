@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"libvirt.org/go/libvirt"
 
+	"k8s.io/apimachinery/pkg/util/json"
 	utilwait "k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 
@@ -472,6 +473,21 @@ func main() {
 	// This informs virt-controller that virt-launcher is ready to handle
 	// managing virtual machines.
 	markReady()
+
+
+	// check if virt-launcher runs as a standalone
+	if vmiObjStr, ok := os.LookupEnv("VMI_OBJ"); ok {
+        var vmi v1.VirtualMachineInstance
+        if err := json.Unmarshal([]byte(vmiObjStr), &vmi); err != nil {
+            panic(err)
+        }
+        
+        if _, err := domainManager.SyncVMI(&vmi, true, nil); err != nil {
+            log.Log.Object(&vmi).Reason(err).Errorf("Failed to sync vmi")
+            //panic(err)
+        }
+	}
+    
 
 	domain := waitForDomainUUID(*qemuTimeout, events, signalStopChan, domainManager)
 	if domain != nil {

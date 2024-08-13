@@ -2126,11 +2126,6 @@ func (d *VirtualMachineController) processVmCleanup(vmi *v1.VirtualMachineInstan
 
 	d.downwardMetricsManager.StopServer(vmi)
 
-	// Unmount container disks and clean up remaining files
-	if err := d.containerDiskMounter.Unmount(vmi); err != nil {
-		return err
-	}
-
 	// UnmountAll does the cleanup on the "best effort" basis: it is
 	// safe to pass a nil cgroupManager.
 	cgroupManager, _ := getCgroupManager(vmi)

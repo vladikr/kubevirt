@@ -93,6 +93,10 @@ func ApplyNewVMIMutations(newVMI *v1.VirtualMachineInstance, clusterConfig *virt
 			Phase:                    newVMI.Status.Phase,
 			PhaseTransitionTimestamp: now,
 		})
+		if !clusterConfig.RootEnabled() {
+			util.MarkAsNonroot(newVMI)
+		}
+
     return nil
 }
 
@@ -128,10 +132,6 @@ func (mutator *VMIsMutator) Mutate(ar *admissionv1.AdmissionReview) *admissionv1
 		}
 
         ApplyNewVMIMutations(newVMI, mutator.ClusterConfig)
-
-		if !mutator.ClusterConfig.RootEnabled() {
-			util.MarkAsNonroot(newVMI)
-		}
 
 		patchSet.AddOption(
 			patch.WithReplace("/spec", newVMI.Spec),

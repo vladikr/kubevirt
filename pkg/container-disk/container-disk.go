@@ -325,7 +325,7 @@ func (c *ContainerDiskManager) GetContainerDiksPath(volume *v1.Volume) (string, 
 	fullPath := filepath.Join(c.procfs, strconv.Itoa(pid), "/root", DiskSourceFallbackPath)
 	files, err := os.ReadDir(fullPath)
 	if err != nil {
-		return "", err
+        return "", fmt.Errorf("failed to list file in the folder %s: %v", fullPath, err)
 	}
 	if len(files) == 0 {
 		return "", fmt.Errorf("no file found in folder %s, no disk present", DiskSourceFallbackPath)

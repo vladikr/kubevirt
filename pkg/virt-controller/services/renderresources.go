@@ -127,32 +127,34 @@ func addToCPU(resource map[k8sv1.ResourceName]resource.Quantity, q resource.Quan
 	}
 }
 
-func WithoutDedicatedCPU(cpu *v1.CPU, cpuAllocationRatio int, withCPULimits bool) ResourceRendererOption {
+// Helper function to extract IO thread CPU count from VMI
+func getIOThreadsCount(vmi *v1.VirtualMachineInstance) int64 {
+	if vmi == nil || vmi.Spec.Domain.IOThreads == nil ||
+		vmi.Spec.Domain.IOThreads.SupplementalPoolThreadCount == nil ||
+		*vmi.Spec.Domain.IOThreads.SupplementalPoolThreadCount < 1 {
+		return 0
+	}
+	return int64(*vmi.Spec.Domain.IOThreads.SupplementalPoolThreadCount)
+}
+
+func WithoutDedicatedCPU(vmi *v1.VirtualMachineInstance, cpuAllocationRatio int, withCPULimits bool) ResourceRendererOption {
 	return func(renderer *ResourceRenderer) {
+		cpu := vmi.Spec.Domain.CPU
 		vcpus := calcVCPUs(cpu)
-		if vcpus != 0 && cpuAllocationRatio > 0 {
-			val := float64(vcpus) / float64(cpuAllocationRatio)
+		ioThreadCPUs := getIOThreadsCount(vmi) // Get IO thread count
+		totalCPUs := vcpus + ioThreadCPUs      // Include IO threads
+		if totalCPUs != 0 && cpuAllocationRatio > 0 {
+			val := float64(totalCPUs) / float64(cpuAllocationRatio)
 			vcpusStr := fmt.Sprintf("%g", val)
 			if val < 1 {
 				val *= 1000
 				vcpusStr = fmt.Sprintf("%gm", val)
 			}
 			renderer.calculatedRequests[k8sv1.ResourceCPU] = resource.MustParse(vcpusStr)
-
 			if withCPULimits {
-				renderer.calculatedLimits[k8sv1.ResourceCPU] = resource.MustParse(strconv.FormatInt(vcpus, 10))
+				renderer.calculatedLimits[k8sv1.ResourceCPU] = resource.MustParse(strconv.FormatInt(totalCPUs, 10))
 			}
 		}
-	}
-}
-
-func WithIOThreads(iothreads *v1.DiskIOThreads) ResourceRendererOption {
-	return func(renderer *ResourceRenderer) {
-		if iothreads == nil || iothreads.SupplementalPoolThreadCount == nil || *iothreads.SupplementalPoolThreadCount < 1 {
-			return
-		}
-		q := resource.NewQuantity(int64(*iothreads.SupplementalPoolThreadCount), resource.BinarySI)
-		addToCPU(renderer.vmLimits, *q)
 	}
 }
 
@@ -223,24 +225,30 @@ func WithAutoMemoryLimits(namespace string, namespaceStore cache.Store) Resource
 	}
 }
 
-func WithCPUPinning(cpu *v1.CPU, annotations map[string]string, additionalCPUs uint32) ResourceRendererOption {
+func WithCPUPinning(vmi *v1.VirtualMachineInstance, annotations map[string]string, additionalCPUs uint32) ResourceRendererOption {
 	return func(renderer *ResourceRenderer) {
+		cpu := vmi.Spec.Domain.CPU
 		vcpus := hardware.GetNumberOfVCPUs(cpu)
+		ioThreadCPUs := getIOThreadsCount(vmi)
 		if vcpus != 0 {
-			renderer.calculatedLimits[k8sv1.ResourceCPU] = *resource.NewQuantity(vcpus, resource.BinarySI)
+			totalCPUs := vcpus + ioThreadCPUs
+			renderer.vmLimits[k8sv1.ResourceCPU] = *resource.NewQuantity(totalCPUs, resource.BinarySI)
+			renderer.vmRequests[k8sv1.ResourceCPU] = *resource.NewQuantity(totalCPUs, resource.BinarySI) // Ensure requests match limits for dedicated CPUs
 		} else {
+			ioThreadsCount := resource.NewQuantity(ioThreadCPUs, resource.BinarySI)
 			if cpuLimit, ok := renderer.vmLimits[k8sv1.ResourceCPU]; ok {
-				renderer.vmRequests[k8sv1.ResourceCPU] = cpuLimit
-			} else if cpuRequest, ok := renderer.vmRequests[k8sv1.ResourceCPU]; ok {
-				renderer.vmLimits[k8sv1.ResourceCPU] = cpuRequest
+				cpuLimit.Add(*ioThreadsCount)
+				renderer.vmLimits[k8sv1.ResourceCPU] = cpuLimit
+			}
+			if cpuRequest, ok := renderer.vmRequests[k8sv1.ResourceCPU]; ok {
+				cpuRequest.Add(*ioThreadsCount)
+				renderer.vmRequests[k8sv1.ResourceCPU] = cpuRequest
 			}
 		}
 
-		// allocate pcpus for emulatorThread if IsolateEmulatorThread is requested
 		if cpu.IsolateEmulatorThread {
 			emulatorThreadCPUs := resource.NewQuantity(1, resource.BinarySI)
-
-			limits := renderer.calculatedLimits[k8sv1.ResourceCPU]
+			limits := renderer.vmLimits[k8sv1.ResourceCPU]
 			_, emulatorThreadCompleteToEvenParityAnnotationExists := annotations[v1.EmulatorThreadCompleteToEvenParity]
 			if emulatorThreadCompleteToEvenParityAnnotationExists &&
 				(limits.Value()+int64(additionalCPUs))%2 == 0 {
@@ -248,14 +256,16 @@ func WithCPUPinning(cpu *v1.CPU, annotations map[string]string, additionalCPUs u
 			}
 			limits.Add(*emulatorThreadCPUs)
 			renderer.vmLimits[k8sv1.ResourceCPU] = limits
-
 			if cpuRequest, ok := renderer.vmRequests[k8sv1.ResourceCPU]; ok {
 				cpuRequest.Add(*emulatorThreadCPUs)
 				renderer.vmRequests[k8sv1.ResourceCPU] = cpuRequest
 			}
 		}
 
-		renderer.vmLimits[k8sv1.ResourceMemory] = *renderer.vmRequests.Memory()
+		// Align memory limits with requests for consistency
+		if memRequest, ok := renderer.vmRequests[k8sv1.ResourceMemory]; ok {
+			renderer.vmLimits[k8sv1.ResourceMemory] = memRequest
+		}
 	}
 }
 
